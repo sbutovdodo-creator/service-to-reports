@@ -192,3 +192,51 @@ footer { padding-top: 20px; border-top: 1px solid var(--line); color: var(--mute
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+
+/* Oven maintenance act */
+.form-shell { width: min(880px, 100%); min-height: 100svh; margin: 0 auto; padding: 28px clamp(20px, 5vw, 54px) 70px; }
+.form-topbar { margin-bottom: clamp(52px, 8vw, 86px); }
+.form-heading { max-width: 680px; }
+.back-link { display: inline-block; margin-bottom: 32px; color: var(--muted); font-size: 13px; font-weight: 750; }
+.back-link:hover { color: var(--accent); }
+.form-heading h1 { max-width: none; font-size: clamp(46px, 8vw, 72px); }
+.form-heading > p:last-child { max-width: 660px; margin: 22px 0 0; color: var(--muted); font-size: 15px; line-height: 1.65; }
+.draft-status { margin: 38px 0 18px; padding: 14px 17px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--muted); font-size: 12px; }
+.draft-status span { display: flex; align-items: center; gap: 9px; }
+.draft-status i { width: 7px; height: 7px; border-radius: 50%; background: #2fa36b; box-shadow: 0 0 0 4px rgba(47, 163, 107, 0.12); }
+.draft-status strong { color: var(--text); white-space: nowrap; }
+.act-form { display: grid; gap: 16px; }
+.form-section { padding: clamp(20px, 4vw, 32px); border: 1px solid var(--line); border-radius: 24px; background: var(--surface); box-shadow: var(--shadow); backdrop-filter: blur(15px); }
+.section-heading { display: flex; align-items: flex-start; gap: 15px; margin-bottom: 26px; }
+.section-heading > span { padding-top: 4px; color: var(--accent); font-size: 11px; font-weight: 850; letter-spacing: .1em; }
+.section-heading h2 { margin: 0 0 5px; font-size: 22px; letter-spacing: -.035em; }
+.section-heading p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 17px; }
+.field-wide { grid-column: 1 / -1; }
+.field { display: grid; gap: 8px; min-width: 0; }
+.field > span { color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .025em; }
+.field input, .field textarea, .field select { width: 100%; min-height: 50px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 13px; outline: none; background: var(--surface-strong); color: var(--text); font: inherit; font-size: 15px; transition: border-color 150ms ease, box-shadow 150ms ease; }
+.field textarea { resize: vertical; line-height: 1.45; }
+.field input[readonly] { color: var(--muted); cursor: default; }
+.field input:focus, .field textarea:focus, .field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 17%, transparent); }
+.field input::placeholder, .field textarea::placeholder { color: color-mix(in srgb, var(--muted) 65%, transparent); }
+.form-submit-bar { position: sticky; bottom: 12px; z-index: 5; margin-top: 5px; padding: 14px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface-strong); box-shadow: 0 18px 44px rgba(10, 35, 48, .18); backdrop-filter: blur(18px); }
+.form-submit-bar > div { display: grid; gap: 3px; padding-left: 4px; }
+.form-submit-bar strong { font-size: 13px; }
+.form-submit-bar span { color: var(--muted); font-size: 10px; }
+.form-submit-bar button { min-height: 48px; padding: 0 20px; border: 0; border-radius: 13px; background: var(--accent); color: #fff; font-weight: 800; cursor: pointer; touch-action: manipulation; }
+.form-submit-bar button:disabled { background: var(--accent-soft); color: var(--muted); cursor: not-allowed; }
+
+@media (max-width: 640px) {
+  .form-shell { padding: 20px 15px 54px; }
+  .form-topbar { margin-bottom: 44px; }
+  .form-heading h1 { font-size: 36px; line-height: 1.05; }
+  .back-link { margin-bottom: 27px; }
+  .draft-status { margin-top: 28px; }
+  .field-grid { grid-template-columns: 1fr; }
+  .field-wide { grid-column: auto; }
+  .form-section { padding: 20px 16px; border-radius: 20px; }
+  .form-submit-bar { align-items: stretch; }
+  .form-submit-bar > div { display: none; }
+  .form-submit-bar button { width: 100%; }
+}

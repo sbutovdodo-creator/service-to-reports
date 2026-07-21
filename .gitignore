@@ -23,6 +23,8 @@
 site-package.tar.gz
 work-package-*
 work-dev.*.log
+private-assets/
+tmp/
 *.pem
 
 # debug
