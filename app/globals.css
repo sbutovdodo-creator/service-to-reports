@@ -178,7 +178,7 @@ footer { padding-top: 20px; border-top: 1px solid var(--line); color: var(--mute
 @media (max-width: 640px) {
   .site-shell { padding: 20px 16px 18px; }
   .hero { display: block; padding: 52px 0 42px; }
-  h1 { max-width: 330px; font-size: clamp(45px, 14vw, 61px); }
+  h1 { max-width: 330px; font-size: clamp(30px, 8.5vw, 36px); line-height: 1.06; letter-spacing: -0.045em; }
   .intro { margin-top: 19px; font-size: 15px; }
   .service-grid { margin-top: 40px; grid-template-columns: 1fr; gap: 12px; }
   .service-card { min-height: 0; padding: 18px; border-radius: 20px; }
