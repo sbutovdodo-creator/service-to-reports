@@ -75,7 +75,7 @@ export default function Home() {
       <section className="hero" aria-labelledby="page-title">
         <div className="hero-copy">
           <p className="kicker"><span aria-hidden="true" /> Новый отчёт</p>
-          <h1 id="page-title">ТО чего<br />проводим?</h1>
+          <h1 id="page-title">ТО чего <br />проводим?</h1>
           <p className="intro">Выберите оборудование, чтобы перейти к заполнению отчёта.</p>
         </div>
 
