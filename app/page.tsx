@@ -8,21 +8,18 @@ const serviceTypes = [
   {
     eyebrow: "Тепловое оборудование",
     title: "ТО печей",
-    description: "Обслуживание пицца-печей XLT 3240 и Робошеф 3",
     href: "/to/ovens",
     mark: "ПЕЧЬ",
   },
   {
     eyebrow: "Электрооборудование",
     title: "ТО щитов",
-    description: "Проверка щитов, соединений и защитной автоматики",
     href: "/to/panels",
     mark: "ЩИТ",
   },
   {
     eyebrow: "Моечное оборудование",
     title: "ТО ПММ",
-    description: "Обслуживание посудомоечных машин и систем подачи",
     href: "/to/dishwashers",
     mark: "ПММ",
   },
@@ -92,7 +89,6 @@ export default function Home() {
               <div className="card-copy">
                 <p>{item.eyebrow}</p>
                 <h2>{item.title}</h2>
-                <span>{item.description}</span>
               </div>
               <span className="card-action">
                 Начать <span aria-hidden="true">→</span>
