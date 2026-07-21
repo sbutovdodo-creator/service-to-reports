@@ -20,6 +20,9 @@
 
 # misc
 .DS_Store
+site-package.tar.gz
+work-package-*
+work-dev.*.log
 *.pem
 
 # debug

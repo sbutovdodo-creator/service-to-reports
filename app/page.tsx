@@ -8,7 +8,7 @@ const serviceTypes = [
   {
     eyebrow: "Тепловое оборудование",
     title: "ТО печей",
-    description: "Осмотр, обслуживание и фиксация результатов по печам",
+    description: "Обслуживание пицца-печей XLT 3240 и Робошеф 3",
     href: "/to/ovens",
     mark: "ПЕЧЬ",
   },
@@ -55,9 +55,12 @@ export default function Home() {
   return (
     <main className="site-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Сервис ТО — на главную">
-          <span className="brand-mark" aria-hidden="true">ТО</span>
-          <span>Сервис ТО</span>
+        <a className="brand" href="/" aria-label="РИК ЛАБ — Сервис ТО, на главную">
+          <img className="brand-logo" src="/rik-logo.png" alt="" width="42" height="42" />
+          <span className="brand-copy">
+            <strong>РИК ЛАБ</strong>
+            <small>Сервис ТО</small>
+          </span>
         </a>
         <button
           className="theme-toggle"

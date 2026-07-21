@@ -18,7 +18,7 @@ export async function generateMetadata(): Promise<Metadata> {
     metadataBase: new URL(origin),
     title: "Сервис ТО — новый отчёт",
     description: "Мобильная форма отчётов о техническом обслуживании оборудования.",
-    icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
+    icons: { icon: "/favicon.ico", shortcut: "/favicon.ico", apple: "/rik-logo.png" },
     openGraph: {
       title: "Сервис ТО — новый отчёт",
       description: "Выберите оборудование и заполните отчёт о техническом обслуживании.",
