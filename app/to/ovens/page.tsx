@@ -1,8 +1,10 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { ovenChecklist } from "./checklist";
 import { siteGroups, siteObjects } from "./objects";
+import { allPhotoSlots, photoRequirements, requiredPhotoSlots } from "./photos";
+import { clearStoredPhotos, compressPhoto, loadStoredPhotos, removeStoredPhoto, saveStoredPhoto, StoredPhoto } from "./photo-storage";
 
 type Theme = "light" | "dark";
 type ActData = {
@@ -14,6 +16,7 @@ type ActData = {
   pizzeriaAddress: string;
   serviceType: string;
   ovenModel: string;
+  ovenPosition: string;
   serialNumber: string;
   technicianName: string;
 };
@@ -51,6 +54,7 @@ const initialData: ActData = {
   pizzeriaAddress: "",
   serviceType: "Плановое ТО печи",
   ovenModel: "",
+  ovenPosition: "",
   serialNumber: "",
   technicianName: "",
 };
@@ -71,8 +75,13 @@ export default function OvenMaintenancePage() {
   const [hydrated, setHydrated] = useState(false);
   const [saveLabel, setSaveLabel] = useState("Автосохранение включено");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [generatedPdf, setGeneratedPdf] = useState<File | null>(null);
+  const [generatedReport, setGeneratedReport] = useState<File | null>(null);
   const [pdfError, setPdfError] = useState("");
+  const [photos, setPhotos] = useState<Record<string, StoredPhoto>>({});
+  const [photoError, setPhotoError] = useState("");
+  const [processingPhoto, setProcessingPhoto] = useState<string | null>(null);
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem("to-theme") as Theme | null;
@@ -106,6 +115,7 @@ export default function OvenMaintenancePage() {
         });
       } catch { /* keep empty act entries */ }
     }
+    loadStoredPhotos().then(setPhotos).catch(() => setPhotoError("Не удалось восстановить сохранённые фотографии"));
     window.localStorage.removeItem(STEP_KEY);
     setHydrated(true);
   }, []);
@@ -130,12 +140,14 @@ export default function OvenMaintenancePage() {
     window.localStorage.setItem(ACT_ENTRIES_KEY, JSON.stringify(actEntries));
   }, [actEntries, hydrated]);
 
-  const requiredFields = useMemo(() => [form.date, form.objectId, form.ovenModel, form.technicianName], [form]);
+  const requiredFields = useMemo(() => [form.date, form.objectId, form.ovenModel, form.ovenPosition, form.technicianName], [form]);
   const actCompleted = requiredFields.filter(Boolean).length;
   const checklistCompleted = ovenChecklist.filter((item) => checklist[item.id]?.done).length;
   const totalCompleted = actCompleted + checklistCompleted;
   const totalRequired = requiredFields.length + ovenChecklist.length;
   const isComplete = totalCompleted === totalRequired;
+  const completedRequiredPhotos = requiredPhotoSlots.filter((slot) => photos[slot.key]).length;
+  const reportIsComplete = isComplete && completedRequiredPhotos === requiredPhotoSlots.length;
 
   function updateField<K extends keyof ActData>(field: K, value: ActData[K]) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -148,6 +160,34 @@ export default function OvenMaintenancePage() {
 
   function updateChecklist(itemId: string, patch: Partial<{ done: boolean; comment: string }>) {
     setChecklist((current) => ({ ...current, [itemId]: { ...current[itemId], ...patch } }));
+  }
+
+  async function handlePhotoChange(key: string, event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setProcessingPhoto(key);
+    setPhotoError("");
+    try {
+      const blob = await compressPhoto(file);
+      await saveStoredPhoto(key, blob);
+      setPhotos((current) => ({ ...current, [key]: { key, blob, updatedAt: Date.now() } }));
+      setGeneratedReport(null);
+    } catch {
+      setPhotoError("Не удалось обработать фото. Сделайте снимок камерой телефона в формате JPEG.");
+    } finally {
+      setProcessingPhoto(null);
+    }
+  }
+
+  async function deletePhoto(key: string) {
+    await removeStoredPhoto(key).catch(() => undefined);
+    setPhotos((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    setGeneratedReport(null);
   }
 
   function updateActEntry(section: keyof ActEntries, index: number, value: string) {
@@ -190,7 +230,7 @@ export default function OvenMaintenancePage() {
         throw new Error(result.error || "Не удалось сформировать PDF");
       }
       const blob = await response.blob();
-      const fileName = `Акт-ТО-печи-${form.objectCode}-${form.date}.pdf`;
+      const fileName = `Акт-ТО-печи-${form.objectCode}-${form.ovenPosition}-${form.date}.pdf`;
       const file = new File([blob], fileName, { type: "application/pdf" });
       setGeneratedPdf(file);
       const link = document.createElement("a");
@@ -206,13 +246,45 @@ export default function OvenMaintenancePage() {
     }
   }
 
+  async function generateReport() {
+    if (!reportIsComplete) return;
+    setIsGeneratingReport(true);
+    setPdfError("");
+    try {
+      const photoItems = allPhotoSlots.filter((slot) => photos[slot.key]).map((slot) => ({ key: slot.key, title: `${slot.requirementTitle} — ${slot.label}`, required: slot.required }));
+      const body = new FormData();
+      body.append("metadata", JSON.stringify({ act: form, entries: actEntries, photos: photoItems }));
+      photoItems.forEach((item) => body.append(`photo:${item.key}`, photos[item.key].blob, `${item.key}.jpg`));
+      const response = await fetch("/api/oven-report/pdf", { method: "POST", body });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({ error: "Не удалось сформировать фотоотчёт" }));
+        throw new Error(result.error || "Не удалось сформировать фотоотчёт");
+      }
+      const blob = await response.blob();
+      const fileName = `Фотоотчёт-ТО-печи-${form.objectCode}-${form.ovenPosition}-${form.date}.pdf`;
+      const file = new File([blob], fileName, { type: "application/pdf" });
+      setGeneratedReport(file);
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = fileName;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 2_000);
+      setSaveLabel("Фотоотчёт сформирован и скачан");
+    } catch (error) {
+      setPdfError(error instanceof Error ? error.message : "Не удалось сформировать фотоотчёт");
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  }
+
   async function sharePdf() {
-    if (!generatedPdf) return;
-    const shareData = { files: [generatedPdf], title: `Акт ТО печи ${form.objectCode}`, text: "Акт необходимо отправить на info@riklab.ru" };
+    const files = [generatedPdf, generatedReport].filter((file): file is File => Boolean(file));
+    if (!files.length) return;
+    const shareData = { files, title: `ТО печи ${form.objectCode}`, text: "Акт и фотоотчёт необходимо отправить на info@riklab.ru" };
     if (navigator.share && (!navigator.canShare || navigator.canShare(shareData))) {
       await navigator.share(shareData).catch(() => undefined);
     } else {
-      window.location.href = `mailto:info@riklab.ru?subject=${encodeURIComponent(`Акт ТО печи ${form.objectCode}`)}&body=${encodeURIComponent("PDF скачан на устройство. Прикрепите его к этому письму.")}`;
+      window.location.href = `mailto:info@riklab.ru?subject=${encodeURIComponent(`ТО печи ${form.objectCode}`)}&body=${encodeURIComponent("PDF-файлы скачаны на устройство. Прикрепите их к этому письму.")}`;
     }
   }
 
@@ -224,7 +296,10 @@ export default function OvenMaintenancePage() {
     setForm({ ...initialData, date: localDate() });
     setChecklist(emptyChecklist());
     setActEntries(emptyActEntries());
+    clearStoredPhotos().catch(() => undefined);
+    setPhotos({});
     setGeneratedPdf(null);
+    setGeneratedReport(null);
     setPdfError("");
     setSaveLabel("Черновик очищен");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -240,17 +315,26 @@ export default function OvenMaintenancePage() {
       <div className="compact-heading">
         <a className="back-link" href="/">← Все виды ТО</a>
         <div className="compact-title-row"><div><p className="kicker"><span aria-hidden="true" /> Техническое обслуживание</p><h1>ТО печи</h1></div><span className="compact-progress">{totalCompleted}/{totalRequired}</span></div>
-        <p>Данные акта и чек-лист находятся на одной странице и сохраняются автоматически.</p>
+        <p>Сначала добавьте фотографии, затем заполните акт. Черновик и фото сохраняются на этом устройстве.</p>
       </div>
 
       <form className="one-page-form" onSubmit={handleSubmit}>
+        <section className="checklist-section photo-report-section" aria-labelledby="photo-report-title">
+          <div className="checklist-section-heading"><span>01</span><div><h2 id="photo-report-title">Обязательные фотографии</h2><p>{completedRequiredPhotos} из {requiredPhotoSlots.length} обязательных фото добавлено</p></div></div>
+          <div className="photo-progress" aria-hidden="true"><span style={{ width: `${requiredPhotoSlots.length ? completedRequiredPhotos / requiredPhotoSlots.length * 100 : 0}%` }} /></div>
+          <div className="photo-requirements">{photoRequirements.map((requirement, index) => <PhotoRequirementRow requirement={requirement} index={index} photos={photos} processingPhoto={processingPhoto} onChange={handlePhotoChange} onDelete={deletePhoto} key={requirement.id} />)}</div>
+          {photoError && <p className="pdf-error" role="alert">{photoError}</p>}
+          <p className="photo-storage-note">Обязательные фото нужны только для формирования отдельного фотоотчёта. Условные фотографии помечены как необязательные.</p>
+        </section>
+
         <section className="form-section compact-form-section act-data-section">
-          <div className="checklist-section-heading"><span>01</span><div><h2>Данные акта</h2><p>Объект, оборудование и инженер</p></div></div>
+          <div className="checklist-section-heading"><span>02</span><div><h2>Данные акта</h2><p>Объект, оборудование и инженер</p></div></div>
           <label className="field object-field"><span>Объект *</span><select value={form.objectId} onChange={(event) => selectObject(event.target.value)} required><option value="">Выберите объект</option>{siteGroups.map((group) => <optgroup label={group} key={group}>{siteObjects.filter((site) => site.group === group).map((site) => <option value={site.id} key={site.id}>{site.code} — {site.address}</option>)}</optgroup>)}</select></label>
           {form.objectId && <div className="object-summary" aria-live="polite"><div><span>Заказчик</span><strong>{form.customer || "Будет добавлен позже"}</strong></div><div><span>Пиццерия</span><strong>{form.objectCode}</strong><p>{form.pizzeriaAddress}</p></div></div>}
           <div className="compact-field-grid">
             <label className="field"><span>Дата работ *</span><input type="date" value={form.date} onChange={(event) => updateField("date", event.target.value)} required /></label>
             <label className="field"><span>Модель печи *</span><select value={form.ovenModel} onChange={(event) => updateField("ovenModel", event.target.value)} required><option value="">Выберите модель</option>{ovenModels.map((model) => <option value={model} key={model}>{model}</option>)}</select></label>
+            <label className="field"><span>Расположение печи *</span><select value={form.ovenPosition} onChange={(event) => updateField("ovenPosition", event.target.value)} required><option value="">Выберите расположение</option><option value="верхняя">Верхняя</option><option value="нижняя">Нижняя</option></select></label>
             <label className="field"><span>Инженер *</span><select value={form.technicianName} onChange={(event) => updateField("technicianName", event.target.value)} required><option value="">Выберите инженера</option>{technicians.map((technician) => <option value={technician} key={technician}>{technician}</option>)}</select></label>
             <label className="field"><span>Серийный номер <small>необязательно</small></span><input value={form.serialNumber} onChange={(event) => updateField("serialNumber", event.target.value)} placeholder="Можно заполнить позже" autoCapitalize="characters" /></label>
           </div>
@@ -258,17 +342,17 @@ export default function OvenMaintenancePage() {
         </section>
 
         <section className="checklist-section" aria-labelledby="inspection-title">
-          <div className="checklist-section-heading"><span>02</span><div><h2 id="inspection-title">Осмотр элементов печи</h2><p>Проверка состояния оборудования до обслуживания</p></div></div>
+          <div className="checklist-section-heading"><span>03</span><div><h2 id="inspection-title">Осмотр элементов печи</h2><p>Проверка состояния оборудования до обслуживания</p></div></div>
           <div className="checklist-items">{ovenChecklist.filter((item) => item.group === "inspection").map((item) => <ChecklistRow item={item} value={checklist[item.id]} onChange={(patch) => updateChecklist(item.id, patch)} key={item.id} />)}</div>
         </section>
 
         <section className="checklist-section" aria-labelledby="maintenance-title">
-          <div className="checklist-section-heading"><span>03</span><div><h2 id="maintenance-title">Работы по техническому обслуживанию</h2><p>Очистка, протяжка, замеры и проверки</p></div></div>
+          <div className="checklist-section-heading"><span>04</span><div><h2 id="maintenance-title">Работы по техническому обслуживанию</h2><p>Очистка, протяжка, замеры и проверки</p></div></div>
           <div className="checklist-items">{ovenChecklist.filter((item) => item.group === "maintenance").map((item) => <ChecklistRow item={item} value={checklist[item.id]} onChange={(patch) => updateChecklist(item.id, patch)} key={item.id} />)}</div>
         </section>
 
         <section className="checklist-section act-entries-section" aria-labelledby="act-entries-title">
-          <div className="checklist-section-heading"><span>04</span><div><h2 id="act-entries-title">Записи в акт</h2><p>Добавляйте нужное количество строк кнопкой «+»</p></div></div>
+          <div className="checklist-section-heading"><span>05</span><div><h2 id="act-entries-title">Записи в акт</h2><p>Добавляйте нужное количество строк кнопкой «+»</p></div></div>
           <div className="act-entry-groups">
             <ActEntryGroup title="Замечания" section="remarks" entries={actEntries.remarks} onChange={updateActEntry} onAdd={addActEntry} onRemove={removeActEntry} />
             <ActEntryGroup title="Рекомендации" section="recommendations" entries={actEntries.recommendations} onChange={updateActEntry} onAdd={addActEntry} onRemove={removeActEntry} />
@@ -282,12 +366,43 @@ export default function OvenMaintenancePage() {
           <span className="compact-save-status"><i aria-hidden="true" /> {saveLabel}</span>
           <div className="compact-form-actions">
             <button className="reset-draft-button" type="button" onClick={resetDraft}>Очистить</button>
-            {generatedPdf && <button className="share-act-button" type="button" onClick={sharePdf}>Поделиться</button>}
-            <button className="save-draft-button" type="submit" disabled={!isComplete || isGenerating}>{isGenerating ? "Формируем…" : isComplete ? "Сформировать PDF" : `${totalCompleted} из ${totalRequired}`}</button>
+            {(generatedPdf || generatedReport) && <button className="share-act-button" type="button" onClick={sharePdf}>Поделиться</button>}
+            <button className="report-button" type="button" onClick={generateReport} disabled={!reportIsComplete || isGeneratingReport}>{isGeneratingReport ? "Отчёт…" : reportIsComplete ? "Фотоотчёт PDF" : `Фото ${completedRequiredPhotos}/${requiredPhotoSlots.length}`}</button>
+            <button className="save-draft-button" type="submit" disabled={!isComplete || isGenerating}>{isGenerating ? "Акт…" : isComplete ? "Акт PDF" : `${totalCompleted} из ${totalRequired}`}</button>
           </div>
         </div>
       </form>
     </main>
+  );
+}
+
+function PhotoRequirementRow({ requirement, index, photos, processingPhoto, onChange, onDelete }: { requirement: (typeof photoRequirements)[number]; index: number; photos: Record<string, StoredPhoto>; processingPhoto: string | null; onChange: (key: string, event: ChangeEvent<HTMLInputElement>) => void; onDelete: (key: string) => void; }) {
+  return (
+    <article className="photo-requirement-row">
+      <div className="photo-requirement-copy"><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{requirement.title}</strong>{requirement.note && <small>{requirement.note}</small>}</div></div>
+      <div className="photo-slot-list">{requirement.slots.map((slot) => <PhotoSlotButton slot={slot} photo={photos[slot.key]} processing={processingPhoto === slot.key} onChange={onChange} onDelete={onDelete} key={slot.key} />)}</div>
+    </article>
+  );
+}
+
+function PhotoSlotButton({ slot, photo, processing, onChange, onDelete }: { slot: (typeof photoRequirements)[number]["slots"][number]; photo?: StoredPhoto; processing: boolean; onChange: (key: string, event: ChangeEvent<HTMLInputElement>) => void; onDelete: (key: string) => void; }) {
+  const [preview, setPreview] = useState("");
+  useEffect(() => {
+    if (!photo) { setPreview(""); return; }
+    const url = URL.createObjectURL(photo.blob);
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [photo]);
+  return (
+    <div className={`photo-slot${photo ? " has-photo" : ""}`}>
+      <label>
+        {preview && <img src={preview} alt="" />}
+        <span>{processing ? "Обработка…" : photo ? `✓ ${slot.label}` : `+ ${slot.label}`}</span>
+        {!slot.required && !photo && <small>необязательно</small>}
+        <input type="file" accept="image/*" capture="environment" onChange={(event) => onChange(slot.key, event)} disabled={processing} />
+      </label>
+      {photo && <button type="button" onClick={() => onDelete(slot.key)} aria-label={`Удалить фото: ${slot.label}`}>×</button>}
+    </div>
   );
 }
 

@@ -2,7 +2,7 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import fontkit from "@pdf-lib/fontkit";
-import { PDFDocument, PDFFont, rgb } from "pdf-lib";
+import { PDFDocument, PDFFont, PDFImage, rgb } from "pdf-lib";
 
 interface Env {
   ASSETS: Fetcher;
@@ -35,6 +35,9 @@ const worker = {
     if (url.pathname === "/api/oven-act/pdf" && request.method === "POST") {
       return createOvenActPdf(request, env);
     }
+    if (url.pathname === "/api/oven-report/pdf" && request.method === "POST") {
+      return createOvenPhotoReport(request, env);
+    }
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
@@ -52,7 +55,7 @@ const worker = {
 };
 
 type PdfPayload = {
-  act: { date: string; contractor: string; customer: string; objectCode: string; pizzeriaAddress: string; serviceType: string; ovenModel: string; serialNumber: string; technicianName: string };
+  act: { date: string; contractor: string; customer: string; objectCode: string; pizzeriaAddress: string; serviceType: string; ovenModel: string; ovenPosition: string; serialNumber: string; technicianName: string };
   checklist: Array<{ number: string; title: string; done: boolean; comment: string }>;
   entries?: { remarks?: string[]; recommendations?: string[]; completedWorks?: string[] };
 };
@@ -60,7 +63,7 @@ type PdfPayload = {
 async function createOvenActPdf(request: Request, env: Env) {
   try {
     const payload = await request.json() as PdfPayload;
-    if (!payload.act?.date || !payload.act?.objectCode || !payload.act?.ovenModel || !payload.act?.technicianName) return Response.json({ error: "Заполнены не все данные акта" }, { status: 400 });
+    if (!payload.act?.date || !payload.act?.objectCode || !payload.act?.ovenModel || !payload.act?.ovenPosition || !payload.act?.technicianName) return Response.json({ error: "Заполнены не все данные акта" }, { status: 400 });
     if (!Array.isArray(payload.checklist) || payload.checklist.length !== 22 || payload.checklist.some((item) => !item.done)) return Response.json({ error: "Не отмечены все пункты чек-листа" }, { status: 400 });
 
     const fetchAsset = (path: string) => env.ASSETS
@@ -86,7 +89,7 @@ async function createOvenActPdf(request: Request, env: Env) {
     text([day, month, year].filter(Boolean).join("."), 160, 69);
     text(payload.act.customer || "Заказчик будет указан позднее", 160, 93);
     text(`${payload.act.pizzeriaAddress} (${payload.act.objectCode})`, 160, 105, 5.8);
-    text(payload.act.ovenModel, 160, 136);
+    text(`${payload.act.ovenModel} (${payload.act.ovenPosition})`, 160, 136);
     text(payload.act.serialNumber || "не указан", 160, 148);
 
     drawMaintenanceTable(page, font, payload.checklist);
@@ -122,6 +125,128 @@ async function createOvenActPdf(request: Request, env: Env) {
     console.error("Failed to generate oven act PDF", error);
     return Response.json({ error: "Не удалось сформировать PDF" }, { status: 500 });
   }
+}
+
+type ReportMetadata = {
+  act: PdfPayload["act"];
+  entries?: { remarks?: string[]; recommendations?: string[]; completedWorks?: string[] };
+  photos?: Array<{ key: string; title: string; required: boolean }>;
+};
+
+const REQUIRED_REPORT_PHOTOS = ["oven-overview", "heaters-before", "heaters-after", "chain", "plugs-before", "plugs-after", "conduit-oven", "conduit-socket", "ground", "controls-before", "controls-after", "contacts", "filters", "heater-load", "heater-resistance", "phase-voltage", "psu-voltage"];
+
+async function createOvenPhotoReport(request: Request, env: Env) {
+  try {
+    const formData = await request.formData();
+    const metadataValue = formData.get("metadata");
+    if (typeof metadataValue !== "string") return Response.json({ error: "Не переданы данные фотоотчёта" }, { status: 400 });
+    const metadata = JSON.parse(metadataValue) as ReportMetadata;
+    if (!metadata.act?.date || !metadata.act?.objectCode || !metadata.act?.ovenModel || !metadata.act?.ovenPosition || !metadata.act?.technicianName) return Response.json({ error: "Сначала заполните данные акта" }, { status: 400 });
+
+    const photoFiles = new Map<string, File>();
+    let totalBytes = 0;
+    for (const [key, value] of formData.entries()) {
+      if (!key.startsWith("photo:") || typeof value === "string") continue;
+      const photoKey = key.slice(6);
+      if (!/^[-a-z0-9]+$/.test(photoKey) || value.size > 4_000_000) return Response.json({ error: "Одна из фотографий слишком большая" }, { status: 413 });
+      totalBytes += value.size;
+      photoFiles.set(photoKey, value);
+    }
+    if (totalBytes > 60_000_000) return Response.json({ error: "Общий размер фотографий слишком большой" }, { status: 413 });
+    if (REQUIRED_REPORT_PHOTOS.some((key) => !photoFiles.has(key))) return Response.json({ error: "Добавлены не все обязательные фотографии" }, { status: 400 });
+
+    const fetchAsset = (path: string) => env.ASSETS ? env.ASSETS.fetch(new Request(new URL(path, request.url))) : fetch(new Request(new URL(path, request.url)));
+    const fontResponse = await fetchAsset("/fonts/DejaVuSans.ttf");
+    if (!fontResponse.ok) return Response.json({ error: "Шрифт отчёта недоступен" }, { status: 500 });
+    const pdf = await PDFDocument.create();
+    pdf.registerFontkit(fontkit);
+    const font = await pdf.embedFont(await fontResponse.arrayBuffer(), { subset: true });
+    const pageSize: [number, number] = [595.92, 842.88];
+    let page = pdf.addPage(pageSize);
+    let y = 786;
+    page.drawText("ФОТООТЧЁТ", { x: 48, y, size: 10, font, color: rgb(0.04, 0.42, 0.57) });
+    y -= 31;
+    page.drawText("Техническое обслуживание печи", { x: 48, y, size: 21, font, color: rgb(0.04, 0.13, 0.18) });
+    y -= 44;
+    const [year, month, day] = metadata.act.date.split("-");
+    const metaRows = [
+      ["Объект", `${metadata.act.pizzeriaAddress} (${metadata.act.objectCode})`],
+      ["Дата", [day, month, year].filter(Boolean).join(".")],
+      ["Печь", `${metadata.act.ovenModel} (${metadata.act.ovenPosition})`],
+      ["Инженер", metadata.act.technicianName],
+      ["Заказчик", metadata.act.customer || "Не указан"],
+    ];
+    for (const [label, value] of metaRows) {
+      page.drawText(label, { x: 48, y, size: 7.5, font, color: rgb(0.35, 0.46, 0.52) });
+      const lines = wrapText(value, font, 10, 390);
+      lines.forEach((line, index) => page.drawText(line, { x: 148, y: y - index * 13, size: 10, font, color: rgb(0.04, 0.1, 0.14) }));
+      y -= Math.max(25, lines.length * 13 + 8);
+    }
+    y -= 7;
+    const entries = {
+      remarks: normalizeEntries(metadata.entries?.remarks),
+      recommendations: normalizeEntries(metadata.entries?.recommendations),
+      completedWorks: normalizeEntries(metadata.entries?.completedWorks),
+    };
+    ({ page, y } = drawReportList(pdf, page, font, y, "Работы сверх чек-листа", entries.completedWorks, pageSize));
+    ({ page, y } = drawReportList(pdf, page, font, y, "Рекомендуемые работы", entries.recommendations, pageSize));
+    ({ page, y } = drawReportList(pdf, page, font, y, "Замечания", entries.remarks, pageSize));
+
+    const photoMetadata = Array.isArray(metadata.photos) ? metadata.photos.filter((item) => photoFiles.has(item.key)).slice(0, 30) : [];
+    for (let index = 0; index < photoMetadata.length; index += 2) {
+      const photoPage = pdf.addPage(pageSize);
+      photoPage.drawText("Фотоотчёт по ТО печи", { x: 48, y: 798, size: 12, font, color: rgb(0.04, 0.13, 0.18) });
+      for (let slotIndex = 0; slotIndex < 2; slotIndex += 1) {
+        const item = photoMetadata[index + slotIndex];
+        if (!item) break;
+        const file = photoFiles.get(item.key)!;
+        let photo: PDFImage;
+        const bytes = await file.arrayBuffer();
+        if (file.type === "image/png") photo = await pdf.embedPng(bytes);
+        else photo = await pdf.embedJpg(bytes);
+        const blockTop = slotIndex === 0 ? 758 : 390;
+        const title = String(item.title || item.key).slice(0, 180);
+        const titleLines = wrapText(title, font, 9, 500).slice(0, 2);
+        titleLines.forEach((line, lineIndex) => photoPage.drawText(line, { x: 48, y: blockTop - lineIndex * 12, size: 9, font, color: rgb(0.05, 0.13, 0.17) }));
+        const maxWidth = 500;
+        const maxHeight = 300;
+        const scale = Math.min(maxWidth / photo.width, maxHeight / photo.height);
+        const width = photo.width * scale;
+        const height = photo.height * scale;
+        const imageTop = blockTop - titleLines.length * 12 - 10;
+        photoPage.drawRectangle({ x: 47, y: imageTop - maxHeight - 1, width: 502, height: maxHeight + 2, borderWidth: 0.5, borderColor: rgb(0.82, 0.86, 0.88) });
+        photoPage.drawImage(photo, { x: 48 + (maxWidth - width) / 2, y: imageTop - height, width, height });
+      }
+    }
+
+    const pages = pdf.getPages();
+    pages.forEach((reportPage, index) => reportPage.drawText(`${index + 1} / ${pages.length}`, { x: 510, y: 22, size: 7, font, color: rgb(0.42, 0.5, 0.54) }));
+    const bytes = await pdf.save();
+    const code = metadata.act.objectCode.replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
+    return new Response(bytes, { headers: { "content-type": "application/pdf", "content-disposition": `attachment; filename="oven-photo-report-${code}-${metadata.act.date}.pdf"`, "cache-control": "no-store" } });
+  } catch (error) {
+    console.error("Failed to generate oven photo report", error);
+    return Response.json({ error: "Не удалось сформировать фотоотчёт" }, { status: 500 });
+  }
+}
+
+function drawReportList(pdf: PDFDocument, initialPage: ReturnType<PDFDocument["getPages"]>[number], font: PDFFont, initialY: number, title: string, values: string[], pageSize: [number, number]) {
+  let page = initialPage;
+  let y = initialY;
+  if (y < 110) { page = pdf.addPage(pageSize); y = 790; }
+  page.drawText(title, { x: 48, y, size: 11, font, color: rgb(0.04, 0.13, 0.18) });
+  y -= 22;
+  if (!values.length) {
+    page.drawText("Не указаны", { x: 48, y, size: 8.5, font, color: rgb(0.4, 0.48, 0.52) });
+    return { page, y: y - 24 };
+  }
+  for (const [index, value] of values.entries()) {
+    const lines = wrapText(`${index + 1}. ${value}`, font, 8.5, 495);
+    if (y - lines.length * 12 < 48) { page = pdf.addPage(pageSize); y = 790; }
+    lines.forEach((line) => { page.drawText(line, { x: 48, y, size: 8.5, font, color: rgb(0.06, 0.1, 0.13) }); y -= 12; });
+    y -= 5;
+  }
+  return { page, y: y - 10 };
 }
 
 function drawMaintenanceTable(page: ReturnType<PDFDocument["getPages"]>[number], font: PDFFont, items: PdfPayload["checklist"]) {
