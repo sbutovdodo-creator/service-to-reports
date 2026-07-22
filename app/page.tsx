@@ -10,18 +10,36 @@ const serviceTypes = [
     title: "ТО печей",
     href: "/to/ovens",
     mark: "ПЕЧЬ",
+    image: "/equipment/oven.webp",
+    imageAlt: "Конвейерная пицца-печь XLT 3240",
+    imageFit: "cover",
   },
   {
     eyebrow: "Электрооборудование",
     title: "ТО щитов",
     href: "/to/panels",
     mark: "ЩИТ",
+    image: "/equipment/panel.webp",
+    imageAlt: "Открытый промышленный электрический щит",
+    imageFit: "cover",
   },
   {
     eyebrow: "Моечное оборудование",
     title: "ТО ПММ",
     href: "/to/dishwashers",
     mark: "ПММ",
+    image: "/equipment/dishwasher.webp",
+    imageAlt: "Профессиональная посудомоечная машина",
+    imageFit: "contain",
+  },
+  {
+    eyebrow: "Противопожарное оборудование",
+    title: "ТО шкафов для зарядки АКБ",
+    href: "/to/battery-cabinets",
+    mark: "АКБ",
+    image: "/equipment/battery.webp",
+    imageAlt: "Противопожарный шкаф СФЕРА для хранения и зарядки АКБ",
+    imageFit: "contain",
   },
 ];
 
@@ -85,6 +103,9 @@ export default function Home() {
               <div className="card-topline">
                 <span className="card-number">0{index + 1}</span>
                 <span className="card-mark" aria-hidden="true">{item.mark}</span>
+              </div>
+              <div className={`card-visual is-${item.imageFit}`}>
+                <img src={item.image} alt={item.imageAlt} width="480" height="320" />
               </div>
               <div className="card-copy">
                 <p>{item.eyebrow}</p>
