@@ -85,19 +85,11 @@ async function createOvenActPdf(request: Request, env: Env) {
     const [year, month, day] = payload.act.date.split("-");
     text([day, month, year].filter(Boolean).join("."), 160, 69);
     text(payload.act.customer || "Заказчик будет указан позднее", 160, 93);
-    text(`${payload.act.objectCode}, ${payload.act.pizzeriaAddress}`, 160, 105, 5.8);
+    text(`${payload.act.pizzeriaAddress} (${payload.act.objectCode})`, 160, 105, 5.8);
     text(payload.act.ovenModel, 160, 136);
     text(payload.act.serialNumber || "не указан", 160, 148);
 
-    const checkboxTops = [202.69, 219.77, 236.85, 249.95, 263.04, 276.14, 289.23, 302.33, 315.42, 328.52, 341.61, 354.71, 367.8, 384.88, 401.4, 413.92, 426.45, 439.54, 452.64, 465.16, 477.69, 490.21];
-    payload.checklist.forEach((item, index) => {
-      const top = checkboxTops[index];
-      page.drawText("✓", { x: 432.2, y: height - top - 8.8, size: 8.4, font, color: rgb(0.02, 0.38, 0.24) });
-      if (item.comment.trim()) {
-        const short = item.comment.trim().length > 26 ? `${item.comment.trim().slice(0, 25)}…` : item.comment.trim();
-        page.drawText(short, { x: 466, y: height - top - 6.8, size: 4.1, font, color: rgb(0.08, 0.1, 0.12), maxWidth: 78 });
-      }
-    });
+    drawMaintenanceTable(page, font, payload.checklist);
 
     const entries = {
       remarks: normalizeEntries(payload.entries?.remarks),
@@ -122,8 +114,6 @@ async function createOvenActPdf(request: Request, env: Env) {
     const stampScale = Math.min(148 / stamp.width, 92 / stamp.height);
     page.drawImage(stamp, { x: 345, y: 59, width: stamp.width * stampScale, height: stamp.height * stampScale });
 
-    const comments = payload.checklist.filter((item) => item.comment.trim());
-    if (comments.length) addCommentsPage(pdf, font, comments);
     if (needsEntriesAppendix) addActEntriesPage(pdf, font, entries);
     const bytes = await pdf.save();
     const fileCode = payload.act.objectCode.replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
@@ -132,6 +122,70 @@ async function createOvenActPdf(request: Request, env: Env) {
     console.error("Failed to generate oven act PDF", error);
     return Response.json({ error: "Не удалось сформировать PDF" }, { status: 500 });
   }
+}
+
+function drawMaintenanceTable(page: ReturnType<PDFDocument["getPages"]>[number], font: PDFFont, items: PdfPayload["checklist"]) {
+  const { height } = page.getSize();
+  const x = 50;
+  const top = 155;
+  const maxBottom = 501;
+  const widths = [34, 288, 55, 119];
+  const tableWidth = widths.reduce((sum, width) => sum + width, 0);
+  const titleHeight = 14;
+  const headerHeight = 20;
+  let fontSize = 5.25;
+  let leading = 6.15;
+  let rows: Array<{ work: string[]; comment: string[]; height: number }> = [];
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    rows = items.map((item) => {
+      const work = wrapText(item.title, font, fontSize, widths[1] - 8);
+      const comment = item.comment.trim() ? wrapText(item.comment.trim(), font, fontSize, widths[3] - 8) : [];
+      return { work, comment, height: Math.max(11, Math.max(work.length, comment.length, 1) * leading + 4) };
+    });
+    const totalHeight = titleHeight + headerHeight + rows.reduce((sum, row) => sum + row.height, 0);
+    if (top + totalHeight <= maxBottom || fontSize <= 4.2) break;
+    fontSize -= 0.15;
+    leading -= 0.17;
+  }
+
+  const baseTotalHeight = titleHeight + headerHeight + rows.reduce((sum, row) => sum + row.height, 0);
+  const extraPerRow = Math.max(0, Math.min(2.2, (maxBottom - top - baseTotalHeight) / rows.length));
+  if (extraPerRow > 0) rows = rows.map((row) => ({ ...row, height: row.height + extraPerRow }));
+  const totalHeight = titleHeight + headerHeight + rows.reduce((sum, row) => sum + row.height, 0);
+  page.drawRectangle({ x, y: height - maxBottom, width: tableWidth, height: maxBottom - top, color: rgb(1, 1, 1) });
+  const line = (x1: number, top1: number, x2: number, top2: number, thickness = 0.45) => page.drawLine({ start: { x: x1, y: height - top1 }, end: { x: x2, y: height - top2 }, thickness, color: rgb(0.05, 0.07, 0.08) });
+  const centered = (value: string, left: number, cellWidth: number, rowTop: number, rowHeight: number, size = 5.4) => {
+    const textWidth = font.widthOfTextAtSize(value, size);
+    page.drawText(value, { x: left + Math.max(3, (cellWidth - textWidth) / 2), y: height - rowTop - (rowHeight + size) / 2 + 1.2, size, font, color: rgb(0.04, 0.06, 0.08) });
+  };
+
+  line(x, top, x + tableWidth, top, 0.7);
+  line(x, top + titleHeight, x + tableWidth, top + titleHeight);
+  centered("Перечень работ по техническому обслуживанию", x, tableWidth, top, titleHeight, 6.2);
+  const headerTop = top + titleHeight;
+  const columns = [x, x + widths[0], x + widths[0] + widths[1], x + widths[0] + widths[1] + widths[2], x + tableWidth];
+  for (const columnX of columns) line(columnX, headerTop, columnX, top + totalHeight);
+  line(x, headerTop + headerHeight, x + tableWidth, headerTop + headerHeight, 0.7);
+  centered("№", columns[0], widths[0], headerTop, headerHeight, 5.6);
+  centered("Работы", columns[1], widths[1], headerTop, headerHeight, 5.6);
+  centered("Выполнено", columns[2], widths[2], headerTop, headerHeight, 5.2);
+  centered("Комментарий", columns[3], widths[3], headerTop, headerHeight, 5.2);
+
+  let rowTop = headerTop + headerHeight;
+  items.forEach((item, index) => {
+    const row = rows[index];
+    centered(item.number, columns[0], widths[0], rowTop, row.height, fontSize);
+    row.work.forEach((value, lineIndex) => page.drawText(value, { x: columns[1] + 4, y: height - rowTop - 3 - fontSize - lineIndex * leading, size: fontSize, font, color: rgb(0.04, 0.06, 0.08) }));
+    row.comment.forEach((value, lineIndex) => page.drawText(value, { x: columns[3] + 4, y: height - rowTop - 3 - fontSize - lineIndex * leading, size: fontSize, font, color: rgb(0.04, 0.06, 0.08) }));
+    const boxSize = 7.5;
+    const boxX = columns[2] + (widths[2] - boxSize) / 2;
+    const boxY = height - rowTop - (row.height + boxSize) / 2;
+    page.drawRectangle({ x: boxX, y: boxY, width: boxSize, height: boxSize, borderWidth: 0.55, borderColor: rgb(0.35, 0.4, 0.42) });
+    page.drawText("✓", { x: boxX + 0.6, y: boxY + 0.4, size: 6.7, font, color: rgb(0.02, 0.38, 0.24) });
+    rowTop += row.height;
+    line(x, rowTop, x + tableWidth, rowTop);
+  });
 }
 
 function normalizeEntries(values?: string[]) {
@@ -168,25 +222,6 @@ function addActEntriesPage(pdf: PDFDocument, font: PDFFont, entries: { remarks: 
       y -= 6;
     }
     y -= 10;
-  }
-}
-
-function addCommentsPage(pdf: PDFDocument, font: PDFFont, comments: PdfPayload["checklist"]) {
-  let page = pdf.addPage([595.92, 842.88]);
-  let y = 795;
-  page.drawText("Комментарии к чек-листу ТО печи", { x: 48, y, size: 15, font, color: rgb(0.04, 0.13, 0.18) });
-  y -= 34;
-  for (const item of comments) {
-    const lines = wrapText(`${item.number}. ${item.title}: ${item.comment.trim()}`, font, 8.5, 495);
-    if (y - lines.length * 13 < 48) {
-      page = pdf.addPage([595.92, 842.88]);
-      y = 795;
-    }
-    for (const line of lines) {
-      page.drawText(line, { x: 48, y, size: 8.5, font, color: rgb(0.06, 0.09, 0.12) });
-      y -= 13;
-    }
-    y -= 7;
   }
 }
 
