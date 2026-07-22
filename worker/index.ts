@@ -8,7 +8,6 @@ interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   PRIVATE_FILES: R2Bucket;
-  STAMP_SETUP_KEY?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -32,14 +31,6 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-
-    if (url.pathname === "/api/admin/stamp" && request.method === "PUT") {
-      if (!env.STAMP_SETUP_KEY || request.headers.get("x-setup-key") !== env.STAMP_SETUP_KEY) return new Response("Forbidden", { status: 403 });
-      const bytes = await request.arrayBuffer();
-      if (!bytes.byteLength || bytes.byteLength > 500_000) return new Response("Invalid image", { status: 400 });
-      await env.PRIVATE_FILES.put("director-stamp-signature.png", bytes, { httpMetadata: { contentType: "image/png" } });
-      return Response.json({ ok: true });
-    }
 
     if (url.pathname === "/api/oven-act/pdf" && request.method === "POST") {
       return createOvenActPdf(request, env);
