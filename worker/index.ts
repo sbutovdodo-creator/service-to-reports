@@ -8,6 +8,7 @@ interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   PRIVATE_FILES: R2Bucket;
+  STAMP_SETUP_KEY?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -32,6 +33,14 @@ const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    if (url.pathname === "/api/admin/stamp" && request.method === "PUT") {
+      if (!env.STAMP_SETUP_KEY || request.headers.get("x-setup-key") !== env.STAMP_SETUP_KEY) return new Response("Forbidden", { status: 403 });
+      const bytes = await request.arrayBuffer();
+      if (!bytes.byteLength || bytes.byteLength > 500_000) return new Response("Invalid image", { status: 400 });
+      await env.PRIVATE_FILES.put("director-stamp-signature.png", bytes, { httpMetadata: { contentType: "image/png" } });
+      return Response.json({ ok: true });
+    }
+
     if (url.pathname === "/api/oven-act/pdf" && request.method === "POST") {
       return createOvenActPdf(request, env);
     }
@@ -54,6 +63,7 @@ const worker = {
 type PdfPayload = {
   act: { date: string; contractor: string; customer: string; objectCode: string; pizzeriaAddress: string; serviceType: string; ovenModel: string; serialNumber: string; technicianName: string };
   checklist: Array<{ number: string; title: string; done: boolean; comment: string }>;
+  entries?: { remarks?: string[]; recommendations?: string[]; completedWorks?: string[] };
 };
 
 async function createOvenActPdf(request: Request, env: Env) {
@@ -98,18 +108,75 @@ async function createOvenActPdf(request: Request, env: Env) {
       }
     });
 
-    text(payload.act.technicianName, 160, 741, 6.2);
-    const stampScale = Math.min(132 / stamp.width, 82 / stamp.height);
-    page.drawImage(stamp, { x: 360, y: 63, width: stamp.width * stampScale, height: stamp.height * stampScale, opacity: 0.9 });
+    const entries = {
+      remarks: normalizeEntries(payload.entries?.remarks),
+      recommendations: normalizeEntries(payload.entries?.recommendations),
+      completedWorks: normalizeEntries(payload.entries?.completedWorks),
+    };
+    const actRows = [
+      { values: entries.remarks, tops: [515, 527, 539] },
+      { values: entries.recommendations, tops: [564, 576, 588] },
+      { values: entries.completedWorks, tops: [613, 625, 637] },
+    ];
+    let needsEntriesAppendix = false;
+    for (const group of actRows) {
+      if (group.values.length > 3) needsEntriesAppendix = true;
+      group.values.slice(0, 3).forEach((value, index) => {
+        if (font.widthOfTextAtSize(value, 5.6) > 410) needsEntriesAppendix = true;
+        page.drawText(fitTextToWidth(value, font, 5.6, 410), { x: 160, y: height - group.tops[index] - 5.6, size: 5.6, font, color: rgb(0.04, 0.08, 0.1) });
+      });
+    }
+
+    text("Пахомов А.В.", 160, 741, 6.2);
+    const stampScale = Math.min(148 / stamp.width, 92 / stamp.height);
+    page.drawImage(stamp, { x: 345, y: 59, width: stamp.width * stampScale, height: stamp.height * stampScale });
 
     const comments = payload.checklist.filter((item) => item.comment.trim());
     if (comments.length) addCommentsPage(pdf, font, comments);
+    if (needsEntriesAppendix) addActEntriesPage(pdf, font, entries);
     const bytes = await pdf.save();
     const fileCode = payload.act.objectCode.replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
     return new Response(bytes, { headers: { "content-type": "application/pdf", "content-disposition": `attachment; filename="oven-act-${fileCode}-${payload.act.date}.pdf"`, "cache-control": "no-store" } });
   } catch (error) {
     console.error("Failed to generate oven act PDF", error);
     return Response.json({ error: "Не удалось сформировать PDF" }, { status: 500 });
+  }
+}
+
+function normalizeEntries(values?: string[]) {
+  if (!Array.isArray(values)) return [];
+  return values.map((value) => String(value).trim().slice(0, 1000)).filter(Boolean).slice(0, 20);
+}
+
+function fitTextToWidth(value: string, font: PDFFont, size: number, maxWidth: number) {
+  if (font.widthOfTextAtSize(value, size) <= maxWidth) return value;
+  let shortened = value;
+  while (shortened.length && font.widthOfTextAtSize(`${shortened}…`, size) > maxWidth) shortened = shortened.slice(0, -1);
+  return `${shortened.trimEnd()}…`;
+}
+
+function addActEntriesPage(pdf: PDFDocument, font: PDFFont, entries: { remarks: string[]; recommendations: string[]; completedWorks: string[] }) {
+  let page = pdf.addPage([595.92, 842.88]);
+  let y = 795;
+  page.drawText("Приложение к акту ТО печи", { x: 48, y, size: 15, font, color: rgb(0.04, 0.13, 0.18) });
+  y -= 36;
+  const groups = [
+    ["Замечания", entries.remarks],
+    ["Рекомендации", entries.recommendations],
+    ["Выполненные работы", entries.completedWorks],
+  ] as const;
+  for (const [title, values] of groups) {
+    if (!values.length) continue;
+    if (y < 90) { page = pdf.addPage([595.92, 842.88]); y = 795; }
+    page.drawText(title, { x: 48, y, size: 11, font, color: rgb(0.04, 0.13, 0.18) });
+    y -= 22;
+    for (const [index, value] of values.entries()) {
+      const lines = wrapText(`${index + 1}. ${value}`, font, 8.5, 495);
+      if (y - lines.length * 13 < 48) { page = pdf.addPage([595.92, 842.88]); y = 795; }
+      for (const line of lines) { page.drawText(line, { x: 48, y, size: 8.5, font, color: rgb(0.06, 0.09, 0.12) }); y -= 13; }
+      y -= 6;
+    }
+    y -= 10;
   }
 }
 

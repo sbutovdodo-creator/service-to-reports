@@ -18,8 +18,15 @@ type ActData = {
   technicianName: string;
 };
 
+type ActEntries = {
+  remarks: string[];
+  recommendations: string[];
+  completedWorks: string[];
+};
+
 const STORAGE_KEY = "oven-act-draft-v2";
 const CHECKLIST_KEY = "oven-checklist-draft-v1";
+const ACT_ENTRIES_KEY = "oven-act-entries-draft-v1";
 const STEP_KEY = "oven-maintenance-step-v1";
 const technicians = ["Давыдов Алексей", "Кусков Сергей", "Пахомов Александр", "Рубцов Алексей", "Фефелов Сергей", "Эсанов Бахром", "Эсанбоев Анвар"];
 const ovenModels = ["XLT3240", "Robochef", "Zanolli 11/65", "Turbochef"];
@@ -49,6 +56,7 @@ const initialData: ActData = {
 };
 
 const emptyChecklist = () => Object.fromEntries(ovenChecklist.map((item) => [item.id, { done: false, comment: "" }]));
+const emptyActEntries = (): ActEntries => ({ remarks: [""], recommendations: [""], completedWorks: [""] });
 
 function themeForCurrentTime(): Theme {
   const hour = new Date().getHours();
@@ -58,6 +66,7 @@ function themeForCurrentTime(): Theme {
 export default function OvenMaintenancePage() {
   const [form, setForm] = useState<ActData>(initialData);
   const [checklist, setChecklist] = useState<Record<string, { done: boolean; comment: string }>>(emptyChecklist);
+  const [actEntries, setActEntries] = useState<ActEntries>(emptyActEntries);
   const [theme, setTheme] = useState<Theme>("light");
   const [hydrated, setHydrated] = useState(false);
   const [saveLabel, setSaveLabel] = useState("Автосохранение включено");
@@ -86,6 +95,17 @@ export default function OvenMaintenancePage() {
         setChecklist(Object.fromEntries(ovenChecklist.map((item) => [item.id, { done: false, comment: "", ...restoredChecklist[item.id] }])));
       } catch { /* keep an empty checklist */ }
     }
+    const savedActEntries = window.localStorage.getItem(ACT_ENTRIES_KEY);
+    if (savedActEntries) {
+      try {
+        const restored = JSON.parse(savedActEntries) as Partial<ActEntries>;
+        setActEntries({
+          remarks: restored.remarks?.length ? restored.remarks : [""],
+          recommendations: restored.recommendations?.length ? restored.recommendations : [""],
+          completedWorks: restored.completedWorks?.length ? restored.completedWorks : [""],
+        });
+      } catch { /* keep empty act entries */ }
+    }
     window.localStorage.removeItem(STEP_KEY);
     setHydrated(true);
   }, []);
@@ -104,6 +124,11 @@ export default function OvenMaintenancePage() {
     if (!hydrated) return;
     window.localStorage.setItem(CHECKLIST_KEY, JSON.stringify(checklist));
   }, [checklist, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    window.localStorage.setItem(ACT_ENTRIES_KEY, JSON.stringify(actEntries));
+  }, [actEntries, hydrated]);
 
   const requiredFields = useMemo(() => [form.date, form.objectId, form.ovenModel, form.technicianName], [form]);
   const actCompleted = requiredFields.filter(Boolean).length;
@@ -125,6 +150,21 @@ export default function OvenMaintenancePage() {
     setChecklist((current) => ({ ...current, [itemId]: { ...current[itemId], ...patch } }));
   }
 
+  function updateActEntry(section: keyof ActEntries, index: number, value: string) {
+    setActEntries((current) => ({ ...current, [section]: current[section].map((entry, entryIndex) => entryIndex === index ? value : entry) }));
+  }
+
+  function addActEntry(section: keyof ActEntries) {
+    setActEntries((current) => ({ ...current, [section]: [...current[section], ""] }));
+  }
+
+  function removeActEntry(section: keyof ActEntries, index: number) {
+    setActEntries((current) => {
+      const next = current[section].filter((_, entryIndex) => entryIndex !== index);
+      return { ...current, [section]: next.length ? next : [""] };
+    });
+  }
+
   function toggleTheme() {
     const next = theme === "light" ? "dark" : "light";
     setTheme(next);
@@ -143,7 +183,7 @@ export default function OvenMaintenancePage() {
       const response = await fetch("/api/oven-act/pdf", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ act: form, checklist: ovenChecklist.map((item) => ({ ...item, ...checklist[item.id] })) }),
+        body: JSON.stringify({ act: form, checklist: ovenChecklist.map((item) => ({ ...item, ...checklist[item.id] })), entries: actEntries }),
       });
       if (!response.ok) {
         const result = await response.json().catch(() => ({ error: "Не удалось сформировать PDF" }));
@@ -180,8 +220,10 @@ export default function OvenMaintenancePage() {
     if (!window.confirm("Очистить данные акта, все галочки и комментарии?")) return;
     window.localStorage.removeItem(STORAGE_KEY);
     window.localStorage.removeItem(CHECKLIST_KEY);
+    window.localStorage.removeItem(ACT_ENTRIES_KEY);
     setForm({ ...initialData, date: localDate() });
     setChecklist(emptyChecklist());
+    setActEntries(emptyActEntries());
     setGeneratedPdf(null);
     setPdfError("");
     setSaveLabel("Черновик очищен");
@@ -225,6 +267,16 @@ export default function OvenMaintenancePage() {
           <div className="checklist-items">{ovenChecklist.filter((item) => item.group === "maintenance").map((item) => <ChecklistRow item={item} value={checklist[item.id]} onChange={(patch) => updateChecklist(item.id, patch)} key={item.id} />)}</div>
         </section>
 
+        <section className="checklist-section act-entries-section" aria-labelledby="act-entries-title">
+          <div className="checklist-section-heading"><span>04</span><div><h2 id="act-entries-title">Записи в акт</h2><p>Добавляйте нужное количество строк кнопкой «+»</p></div></div>
+          <div className="act-entry-groups">
+            <ActEntryGroup title="Замечания" section="remarks" entries={actEntries.remarks} onChange={updateActEntry} onAdd={addActEntry} onRemove={removeActEntry} />
+            <ActEntryGroup title="Рекомендации" section="recommendations" entries={actEntries.recommendations} onChange={updateActEntry} onAdd={addActEntry} onRemove={removeActEntry} />
+            <ActEntryGroup title="Выполненные работы" section="completedWorks" entries={actEntries.completedWorks} onChange={updateActEntry} onAdd={addActEntry} onRemove={removeActEntry} />
+          </div>
+          <p className="fixed-act-signer">Исполнитель в акте: <strong>Пахомов А.В.</strong></p>
+        </section>
+
         {pdfError && <p className="pdf-error" role="alert">{pdfError}</p>}
         <div className="compact-save-row">
           <span className="compact-save-status"><i aria-hidden="true" /> {saveLabel}</span>
@@ -236,6 +288,15 @@ export default function OvenMaintenancePage() {
         </div>
       </form>
     </main>
+  );
+}
+
+function ActEntryGroup({ title, section, entries, onChange, onAdd, onRemove }: { title: string; section: keyof ActEntries; entries: string[]; onChange: (section: keyof ActEntries, index: number, value: string) => void; onAdd: (section: keyof ActEntries) => void; onRemove: (section: keyof ActEntries, index: number) => void; }) {
+  return (
+    <div className="act-entry-group">
+      <div className="act-entry-group-heading"><h3>{title}</h3><button type="button" onClick={() => onAdd(section)} aria-label={`Добавить строку: ${title}`}>+</button></div>
+      <div className="act-entry-list">{entries.map((entry, index) => <div className="act-entry-row" key={`${section}-${index}`}><span>{index + 1}</span><textarea value={entry} onChange={(event) => onChange(section, index, event.target.value)} placeholder="Введите текст" rows={2} lang="ru" spellCheck autoCorrect="on" autoCapitalize="sentences" />{entries.length > 1 && <button type="button" onClick={() => onRemove(section, index)} aria-label={`Удалить строку ${index + 1}`}>×</button>}</div>)}</div>
+    </div>
   );
 }
 
