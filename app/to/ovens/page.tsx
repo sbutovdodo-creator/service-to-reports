@@ -21,6 +21,12 @@ const STORAGE_KEY = "oven-act-draft-v2";
 const technicians = ["Давыдов Алексей", "Кусков Сергей", "Пахомов Александр", "Рубцов Алексей", "Фефелов Сергей", "Эсанов Бахром", "Эсанбоев Анвар"];
 const ovenModels = ["XLT3240", "Robochef", "Zanolli 11/65", "Turbochef"];
 
+function customerForObject(objectId: string) {
+  if (/^0-\d+$/.test(objectId) || /^x[1-4]$/.test(objectId)) return "ООО «Пицца Венчур»";
+  if (/^m(?:[1-9]|[12]\d|30)$/.test(objectId) || /^m27-/.test(objectId) || ["r1", "r2", "zh1", "zh2", "k1", "k2"].includes(objectId)) return "ООО «ДПМ Север»";
+  return "";
+}
+
 function localDate() {
   const date = new Date();
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
@@ -57,7 +63,10 @@ export default function OvenMaintenancePage() {
     document.documentElement.dataset.theme = initialTheme;
     const savedDraft = window.localStorage.getItem(STORAGE_KEY);
     if (savedDraft) {
-      try { setForm({ ...initialData, ...JSON.parse(savedDraft) }); }
+      try {
+        const restored = { ...initialData, ...JSON.parse(savedDraft) } as ActData;
+        setForm({ ...restored, customer: customerForObject(restored.objectId) });
+      }
       catch { setForm({ ...initialData, date: localDate() }); }
     } else setForm({ ...initialData, date: localDate() });
     setHydrated(true);
@@ -88,7 +97,7 @@ export default function OvenMaintenancePage() {
       objectId,
       objectCode: site?.code ?? "",
       pizzeriaAddress: site?.address ?? "",
-      customer: site ? "Додо Пицца" : "",
+      customer: site ? customerForObject(site.id) : "",
     }));
   }
 
@@ -131,7 +140,7 @@ export default function OvenMaintenancePage() {
             </select>
           </label>
 
-          {form.objectId && <div className="object-summary" aria-live="polite"><div><span>Заказчик</span><strong>{form.customer}</strong></div><div><span>Пиццерия</span><strong>{form.objectCode}</strong><p>{form.pizzeriaAddress}</p></div></div>}
+          {form.objectId && <div className="object-summary" aria-live="polite"><div><span>Заказчик</span><strong>{form.customer || "Будет добавлен позже"}</strong></div><div><span>Пиццерия</span><strong>{form.objectCode}</strong><p>{form.pizzeriaAddress}</p></div></div>}
 
           <div className="compact-field-grid">
             <label className="field"><span>Дата работ *</span><input type="date" value={form.date} onChange={(event) => updateField("date", event.target.value)} required /></label>
