@@ -14,8 +14,10 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
+    "pdf-lib": "^1.17.1",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },

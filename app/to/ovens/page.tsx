@@ -61,6 +61,9 @@ export default function OvenMaintenancePage() {
   const [theme, setTheme] = useState<Theme>("light");
   const [hydrated, setHydrated] = useState(false);
   const [saveLabel, setSaveLabel] = useState("Автосохранение включено");
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generatedPdf, setGeneratedPdf] = useState<File | null>(null);
+  const [pdfError, setPdfError] = useState("");
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem("to-theme") as Theme | null;
@@ -129,12 +132,48 @@ export default function OvenMaintenancePage() {
     window.localStorage.setItem("to-theme", next);
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!isComplete) return;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(form));
     window.localStorage.setItem(CHECKLIST_KEY, JSON.stringify(checklist));
-    setSaveLabel("Данные акта и чек-лист полностью сохранены");
+    setIsGenerating(true);
+    setPdfError("");
+    try {
+      const response = await fetch("/api/oven-act/pdf", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ act: form, checklist: ovenChecklist.map((item) => ({ ...item, ...checklist[item.id] })) }),
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({ error: "Не удалось сформировать PDF" }));
+        throw new Error(result.error || "Не удалось сформировать PDF");
+      }
+      const blob = await response.blob();
+      const fileName = `Акт-ТО-печи-${form.objectCode}-${form.date}.pdf`;
+      const file = new File([blob], fileName, { type: "application/pdf" });
+      setGeneratedPdf(file);
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = fileName;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 2_000);
+      setSaveLabel("PDF сформирован и скачан");
+    } catch (error) {
+      setPdfError(error instanceof Error ? error.message : "Не удалось сформировать PDF");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  async function sharePdf() {
+    if (!generatedPdf) return;
+    const shareData = { files: [generatedPdf], title: `Акт ТО печи ${form.objectCode}`, text: "Акт необходимо отправить на info@riklab.ru" };
+    if (navigator.share && (!navigator.canShare || navigator.canShare(shareData))) {
+      await navigator.share(shareData).catch(() => undefined);
+    } else {
+      window.location.href = `mailto:info@riklab.ru?subject=${encodeURIComponent(`Акт ТО печи ${form.objectCode}`)}&body=${encodeURIComponent("PDF скачан на устройство. Прикрепите его к этому письму.")}`;
+    }
   }
 
   function resetDraft() {
@@ -143,6 +182,8 @@ export default function OvenMaintenancePage() {
     window.localStorage.removeItem(CHECKLIST_KEY);
     setForm({ ...initialData, date: localDate() });
     setChecklist(emptyChecklist());
+    setGeneratedPdf(null);
+    setPdfError("");
     setSaveLabel("Черновик очищен");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -184,9 +225,14 @@ export default function OvenMaintenancePage() {
           <div className="checklist-items">{ovenChecklist.filter((item) => item.group === "maintenance").map((item) => <ChecklistRow item={item} value={checklist[item.id]} onChange={(patch) => updateChecklist(item.id, patch)} key={item.id} />)}</div>
         </section>
 
+        {pdfError && <p className="pdf-error" role="alert">{pdfError}</p>}
         <div className="compact-save-row">
           <span className="compact-save-status"><i aria-hidden="true" /> {saveLabel}</span>
-          <div className="compact-form-actions"><button className="reset-draft-button" type="button" onClick={resetDraft}>Очистить</button><button className="save-draft-button" type="submit" disabled={!isComplete}>{isComplete ? "Сохранить ТО" : `${totalCompleted} из ${totalRequired}`}</button></div>
+          <div className="compact-form-actions">
+            <button className="reset-draft-button" type="button" onClick={resetDraft}>Очистить</button>
+            {generatedPdf && <button className="share-act-button" type="button" onClick={sharePdf}>Поделиться</button>}
+            <button className="save-draft-button" type="submit" disabled={!isComplete || isGenerating}>{isGenerating ? "Формируем…" : isComplete ? "Сформировать PDF" : `${totalCompleted} из ${totalRequired}`}</button>
+          </div>
         </div>
       </form>
     </main>
@@ -197,7 +243,7 @@ function ChecklistRow({ item, value, onChange }: { item: (typeof ovenChecklist)[
   return (
     <article className={`checklist-row${value?.done ? " is-done" : ""}`}>
       <label className="checklist-main"><input type="checkbox" checked={value?.done ?? false} onChange={(event) => onChange({ done: event.target.checked })} /><span className="checkmark" aria-hidden="true">✓</span><span className="checklist-number">{item.number}</span><strong>{item.title}</strong></label>
-      <details className="comment-details" open={Boolean(value?.comment)}><summary>{value?.comment ? "Комментарий добавлен" : "Добавить комментарий"}</summary><textarea value={value?.comment ?? ""} onChange={(event) => onChange({ comment: event.target.value })} placeholder="Замечание, результат замера или пояснение" rows={2} /></details>
+      <details className="comment-details" open={Boolean(value?.comment)}><summary>{value?.comment ? "Комментарий добавлен" : "Добавить комментарий"}</summary><textarea value={value?.comment ?? ""} onChange={(event) => onChange({ comment: event.target.value })} placeholder="Замечание, результат замера или пояснение" rows={2} lang="ru" spellCheck autoCorrect="on" autoCapitalize="sentences" /></details>
     </article>
   );
 }

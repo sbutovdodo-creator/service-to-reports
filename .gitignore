@@ -24,6 +24,7 @@ site-package.tar.gz
 work-package-*
 work-dev.*.log
 private-assets/
+.dev.vars
 tmp/
 *.pem
 
