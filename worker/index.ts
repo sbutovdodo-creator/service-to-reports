@@ -12,6 +12,12 @@ interface Env {
   APP_AUTH_LOGIN?: string;
   APP_AUTH_PASSWORD?: string;
   APP_AUTH_SECRET?: string;
+  SMTP_HOST?: string;
+  SMTP_PORT?: string;
+  SMTP_USER?: string;
+  SMTP_PASSWORD?: string;
+  MAIL_FROM?: string;
+  MAIL_TO?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -53,6 +59,9 @@ const worker = {
     }
     if (url.pathname === "/api/oven-report/docx" && request.method === "POST") {
       return createOvenPhotoReportDocx(request);
+    }
+    if (url.pathname === "/api/oven-report/email" && request.method === "POST") {
+      return sendOvenReportEmail(request, env);
     }
 
     if (url.pathname === "/_vinext/image") {
@@ -343,6 +352,208 @@ async function createOvenPhotoReportDocx(request: Request) {
   } catch (error) {
     console.error("Failed to generate oven photo report DOCX", error);
     return Response.json({ error: "Не удалось сформировать редактируемый отчёт" }, { status: 500 });
+  }
+}
+
+type EmailMetadata = {
+  objectCode?: string;
+  date?: string;
+  ovenModel?: string;
+  ovenPosition?: string;
+  technicianName?: string;
+};
+
+async function sendOvenReportEmail(request: Request, env: Env) {
+  if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASSWORD || !env.MAIL_FROM || !env.MAIL_TO) {
+    return Response.json({ error: "Отправка почты ещё не настроена" }, { status: 503 });
+  }
+
+  try {
+    const formData = await request.formData();
+    const metadataValue = formData.get("metadata");
+    const act = formData.get("act");
+    const reportPdf = formData.get("reportPdf");
+    const reportDocx = formData.get("reportDocx");
+    if (typeof metadataValue !== "string") return Response.json({ error: "Не переданы данные отчёта" }, { status: 400 });
+    if (!(act instanceof File) || !(reportPdf instanceof File) || !(reportDocx instanceof File)) {
+      return Response.json({ error: "Сначала сформируйте акт PDF, отчёт PDF и отчёт DOCX" }, { status: 400 });
+    }
+
+    const metadata = JSON.parse(metadataValue) as EmailMetadata;
+    const clean = (value: unknown, fallback: string) => String(value || fallback).replace(/[\r\n]+/g, " ").trim().slice(0, 180);
+    const objectCode = clean(metadata.objectCode, "без номера");
+    const date = clean(metadata.date, "без даты");
+    const ovenModel = clean(metadata.ovenModel, "модель не указана");
+    const ovenPosition = clean(metadata.ovenPosition, "положение не указано");
+    const technicianName = clean(metadata.technicianName, "не указан");
+    const attachments = [act, reportPdf, reportDocx];
+    const totalBytes = attachments.reduce((sum, file) => sum + file.size, 0);
+    if (totalBytes > 20_000_000) return Response.json({ error: "Общий размер трёх файлов превышает 20 МБ" }, { status: 413 });
+    if (attachments.some((file) => !isAllowedEmailAttachment(file))) {
+      return Response.json({ error: "К письму можно приложить только PDF и DOCX" }, { status: 400 });
+    }
+
+    const boundary = `riklab-${crypto.randomUUID()}`;
+    const subject = `ТО печи ${objectCode} — ${ovenModel} (${ovenPosition}), ${date}`;
+    const body = [
+      "Документы по техническому обслуживанию печи сформированы на сайте РИК ЛАБ.",
+      "",
+      `Объект: ${objectCode}`,
+      `Дата: ${date}`,
+      `Печь: ${ovenModel} (${ovenPosition})`,
+      `Инженер: ${technicianName}`,
+      "",
+      "Во вложении: акт PDF, фотоотчёт PDF и редактируемый фотоотчёт DOCX.",
+    ].join("\r\n");
+    const parts = [
+      `From: ${formatMailbox(env.MAIL_FROM)}`,
+      `To: ${formatMailbox(env.MAIL_TO)}`,
+      `Subject: ${encodeMimeHeader(subject)}`,
+      `Date: ${new Date().toUTCString()}`,
+      `Message-ID: <${crypto.randomUUID()}@riklab.ru>`,
+      "MIME-Version: 1.0",
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "Content-Transfer-Encoding: base64",
+      "",
+      wrapBase64(base64Utf8(body)),
+    ];
+
+    for (const file of attachments) {
+      const fallbackName = safeAsciiFilename(file.name, file.type);
+      parts.push(
+        `--${boundary}`,
+        `Content-Type: ${file.type || "application/octet-stream"}; name="${fallbackName}"`,
+        "Content-Transfer-Encoding: base64",
+        `Content-Disposition: attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+        "",
+        wrapBase64(base64Bytes(new Uint8Array(await file.arrayBuffer()))),
+      );
+    }
+    parts.push(`--${boundary}--`, "");
+    await smtpSend(env, parts.join("\r\n"));
+    return Response.json({ ok: true, recipient: env.MAIL_TO });
+  } catch (error) {
+    console.error("SMTP send failed", error instanceof Error ? error.message : "Unknown error");
+    return Response.json({ error: "Не удалось отправить письмо. Попробуйте ещё раз" }, { status: 502 });
+  }
+}
+
+function isAllowedEmailAttachment(file: File) {
+  return file.type === "application/pdf" || file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+}
+
+function formatMailbox(value: string) {
+  const mailbox = value.replace(/[\r\n<>]/g, "").trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mailbox)) throw new Error("Invalid mailbox configuration");
+  return `<${mailbox}>`;
+}
+
+function safeAsciiFilename(name: string, mimeType: string) {
+  const extension = mimeType === "application/pdf" ? ".pdf" : ".docx";
+  const stem = name.replace(/\.[^.]+$/, "").normalize("NFKD").replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "riklab-report";
+  return `${stem}${extension}`;
+}
+
+function encodeMimeHeader(value: string) {
+  return `=?UTF-8?B?${base64Utf8(value)}?=`;
+}
+
+function base64Utf8(value: string) {
+  return base64Bytes(new TextEncoder().encode(value));
+}
+
+function base64Bytes(bytes: Uint8Array) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 12_288) {
+    const end = Math.min(bytes.length, offset + 12_288);
+    let chunk = "";
+    for (let index = offset; index < end; index += 3) {
+      const a = bytes[index];
+      const hasB = index + 1 < bytes.length;
+      const hasC = index + 2 < bytes.length;
+      const b = hasB ? bytes[index + 1] : 0;
+      const c = hasC ? bytes[index + 2] : 0;
+      chunk += alphabet[a >> 2];
+      chunk += alphabet[((a & 3) << 4) | (b >> 4)];
+      chunk += hasB ? alphabet[((b & 15) << 2) | (c >> 6)] : "=";
+      chunk += hasC ? alphabet[c & 63] : "=";
+    }
+    chunks.push(chunk);
+  }
+  return chunks.join("");
+}
+
+function wrapBase64(value: string) {
+  return value.match(/.{1,76}/g)?.join("\r\n") || "";
+}
+
+async function smtpSend(env: Env, message: string) {
+  const { connect } = await import("cloudflare:sockets");
+  const socket = connect(
+    { hostname: env.SMTP_HOST!, port: Number(env.SMTP_PORT || 465) },
+    { secureTransport: "on", allowHalfOpen: false },
+  );
+  await socket.opened;
+  const reader = socket.readable.getReader();
+  const writer = socket.writable.getWriter();
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let lineBuffer = "";
+
+  const readLine = async (): Promise<string> => {
+    while (!lineBuffer.includes("\r\n")) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error("SMTP connection closed unexpectedly");
+      lineBuffer += decoder.decode(value, { stream: true });
+    }
+    const separator = lineBuffer.indexOf("\r\n");
+    const line = lineBuffer.slice(0, separator);
+    lineBuffer = lineBuffer.slice(separator + 2);
+    return line;
+  };
+  const readResponse = async () => {
+    const first = await readLine();
+    const match = first.match(/^(\d{3})([ -])/);
+    if (!match) throw new Error("Invalid SMTP response");
+    const code = Number(match[1]);
+    if (match[2] === "-") {
+      while (true) {
+        const line = await readLine();
+        if (line.startsWith(`${match[1]} `)) break;
+      }
+    }
+    return code;
+  };
+  const expect = async (allowed: number[]) => {
+    const code = await readResponse();
+    if (!allowed.includes(code)) throw new Error(`SMTP rejected command (${code})`);
+  };
+  const command = async (value: string, allowed: number[]) => {
+    await writer.write(encoder.encode(`${value}\r\n`));
+    await expect(allowed);
+  };
+
+  try {
+    await expect([220]);
+    await command("EHLO service-to-reports.riklab.ru", [250]);
+    await command("AUTH LOGIN", [334]);
+    await command(base64Utf8(env.SMTP_USER!), [334]);
+    await command(base64Utf8(env.SMTP_PASSWORD!), [235]);
+    await command(`MAIL FROM:${formatMailbox(env.MAIL_FROM!)}`, [250]);
+    await command(`RCPT TO:${formatMailbox(env.MAIL_TO!)}`, [250, 251]);
+    await command("DATA", [354]);
+    const dotStuffed = message.replace(/(^|\r\n)\./g, "$1..");
+    await writer.write(encoder.encode(`${dotStuffed}\r\n.\r\n`));
+    await expect([250]);
+    await command("QUIT", [221]);
+  } finally {
+    reader.releaseLock();
+    writer.releaseLock();
+    socket.close();
   }
 }
 

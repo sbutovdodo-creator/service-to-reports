@@ -81,6 +81,7 @@ export default function OvenMaintenancePage() {
   const [generatedReport, setGeneratedReport] = useState<File | null>(null);
   const [generatedReportDocx, setGeneratedReportDocx] = useState<File | null>(null);
   const [isGeneratingDocx, setIsGeneratingDocx] = useState(false);
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [pdfError, setPdfError] = useState("");
   const [photos, setPhotos] = useState<Record<string, StoredPhoto>>({});
   const [photoError, setPhotoError] = useState("");
@@ -314,14 +315,27 @@ export default function OvenMaintenancePage() {
     }
   }
 
-  async function sharePdf() {
-    const files = [generatedPdf, generatedReport, generatedReportDocx].filter((file): file is File => Boolean(file));
-    if (!files.length) return;
-    const shareData = { files, title: `ТО печи ${form.objectCode}`, text: "Акт и фотоотчёт необходимо отправить на info@riklab.ru" };
-    if (navigator.share && (!navigator.canShare || navigator.canShare(shareData))) {
-      await navigator.share(shareData).catch(() => undefined);
-    } else {
-      window.location.href = `mailto:info@riklab.ru?subject=${encodeURIComponent(`ТО печи ${form.objectCode}`)}&body=${encodeURIComponent("Акт, PDF- и DOCX-отчёты скачаны на устройство. Прикрепите их к этому письму.")}`;
+  async function sendEmail() {
+    if (!generatedPdf || !generatedReport || !generatedReportDocx) {
+      setPdfError("Сначала сформируйте акт PDF, отчёт PDF и отчёт DOCX");
+      return;
+    }
+    setIsSendingEmail(true);
+    setPdfError("");
+    try {
+      const body = new FormData();
+      body.append("metadata", JSON.stringify({ objectCode: form.objectCode, date: form.date, ovenModel: form.ovenModel, ovenPosition: form.ovenPosition, technicianName: form.technicianName }));
+      body.append("act", generatedPdf, generatedPdf.name);
+      body.append("reportPdf", generatedReport, generatedReport.name);
+      body.append("reportDocx", generatedReportDocx, generatedReportDocx.name);
+      const response = await fetch("/api/oven-report/email", { method: "POST", body });
+      const result = await response.json().catch(() => ({ error: "Не удалось отправить письмо" }));
+      if (!response.ok) throw new Error(result.error || "Не удалось отправить письмо");
+      setSaveLabel("Акт и отчёты отправлены на info@riklab.ru");
+    } catch (error) {
+      setPdfError(error instanceof Error ? error.message : "Не удалось отправить письмо");
+    } finally {
+      setIsSendingEmail(false);
     }
   }
 
@@ -338,6 +352,7 @@ export default function OvenMaintenancePage() {
     setGeneratedPdf(null);
     setGeneratedReport(null);
     setGeneratedReportDocx(null);
+    setIsSendingEmail(false);
     setPdfError("");
     setSaveLabel("Черновик очищен");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -412,7 +427,7 @@ export default function OvenMaintenancePage() {
           <span className="compact-save-status"><i aria-hidden="true" /> {saveLabel}</span>
           <div className="compact-form-actions">
             <button className="reset-draft-button" type="button" onClick={resetDraft}>Очистить</button>
-            {(generatedPdf || generatedReport || generatedReportDocx) && <button className="share-act-button" type="button" onClick={sharePdf}>Отправить на почту</button>}
+            {generatedPdf && generatedReport && generatedReportDocx && <button className="share-act-button" type="button" onClick={sendEmail} disabled={isSendingEmail}>{isSendingEmail ? "Отправляем…" : "Отправить на почту"}</button>}
             <button className="report-button" type="button" onClick={() => generateReport("docx")} disabled={!reportIsComplete || isGeneratingDocx}>{isGeneratingDocx ? "DOCX…" : "Отчёт DOCX"}</button>
             <button className="report-button" type="button" onClick={() => generateReport("pdf")} disabled={!reportIsComplete || isGeneratingReport}>{isGeneratingReport ? "PDF…" : reportIsComplete ? "Отчёт PDF" : `Фото ${completedRequiredPhotos}/${requiredPhotoSlots.length}`}</button>
             <button className="save-draft-button" type="submit" disabled={!isComplete || isGenerating}>{isGenerating ? "Акт…" : isComplete ? "Акт PDF" : `${totalCompleted} из ${totalRequired}`}</button>
