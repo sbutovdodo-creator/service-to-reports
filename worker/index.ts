@@ -54,6 +54,9 @@ const worker = {
     if (url.pathname === "/api/oven-act/pdf" && request.method === "POST") {
       return createOvenActPdf(request, env);
     }
+    if (url.pathname === "/api/oven-act/docx" && request.method === "POST") {
+      return createOvenActDocx(request, env);
+    }
     if (url.pathname === "/api/oven-report/pdf" && request.method === "POST") {
       return createOvenPhotoReport(request, env);
     }
@@ -177,6 +180,98 @@ async function createOvenActPdf(request: Request, env: Env) {
     console.error("Failed to generate oven act PDF", error);
     return Response.json({ error: "Не удалось сформировать PDF" }, { status: 500 });
   }
+}
+
+async function createOvenActDocx(request: Request, env: Env) {
+  try {
+    const payload = await request.json() as PdfPayload;
+    if (!payload.act?.date || !payload.act?.objectCode || !payload.act?.ovenModel || !payload.act?.ovenPosition || !payload.act?.technicianName) return Response.json({ error: "Заполнены не все данные акта" }, { status: 400 });
+    if (!Array.isArray(payload.checklist) || payload.checklist.length !== 22 || payload.checklist.some((item) => !item.done)) return Response.json({ error: "Не отмечены все пункты чек-листа" }, { status: 400 });
+    const stampObject = await env.PRIVATE_FILES.get("director-stamp-signature.png");
+    if (!stampObject) return Response.json({ error: "Печать и подпись ещё не настроены" }, { status: 503 });
+    const stampBytes = new Uint8Array(await stampObject.arrayBuffer());
+    const stampSize = readImageDimensions(stampBytes, "image/png");
+    const stampScale = Math.min(230 / stampSize.width, 115 / stampSize.height);
+    const [year, month, day] = payload.act.date.split("-");
+    const date = [day, month, year].filter(Boolean).join(".");
+    const metaRows = [
+      ["Дата", date],
+      ["Заказчик", payload.act.customer || "Будет указан позднее"],
+      ["Объект", `${payload.act.pizzeriaAddress} (${payload.act.objectCode})`],
+      ["Оборудование", `${payload.act.ovenModel} (${payload.act.ovenPosition})`],
+      ["Серийный номер", payload.act.serialNumber || "не указан"],
+      ["Вид обслуживания", payload.act.serviceType || "Плановое ТО печи"],
+    ];
+    const metadataTable = new Table({
+      width: { size: 9360, type: WidthType.DXA },
+      columnWidths: [2200, 7160],
+      rows: metaRows.map(([label, value]) => new TableRow({ children: [
+        new TableCell({ width: { size: 2200, type: WidthType.DXA }, shading: { type: ShadingType.CLEAR, fill: "E8F3F7" }, children: [new Paragraph({ children: [new TextRun({ text: label, bold: true, font: "Arial", size: 19, color: "355967" })] })] }),
+        new TableCell({ width: { size: 7160, type: WidthType.DXA }, children: [new Paragraph({ children: [new TextRun({ text: value, font: "Arial", size: 19, color: "102936" })] })] }),
+      ] })),
+    });
+    const checklistRows = [
+      new TableRow({ tableHeader: true, children: [
+        actDocxCell("№", 600, true, "DCECF2", AlignmentType.CENTER),
+        actDocxCell("Работы", 5700, true, "DCECF2", AlignmentType.CENTER),
+        actDocxCell("Выполнено", 1100, true, "DCECF2", AlignmentType.CENTER),
+        actDocxCell("Комментарий", 1960, true, "DCECF2", AlignmentType.CENTER),
+      ] }),
+      ...payload.checklist.map((item) => new TableRow({ cantSplit: true, children: [
+        actDocxCell(item.number, 600, false, undefined, AlignmentType.CENTER),
+        actDocxCell(item.title, 5700),
+        actDocxCell(item.done ? "Да" : "Нет", 1100, false, undefined, AlignmentType.CENTER),
+        actDocxCell(item.comment.trim() || "—", 1960),
+      ] })),
+    ];
+    const checklistTable = new Table({ width: { size: 9360, type: WidthType.DXA }, columnWidths: [600, 5700, 1100, 1960], rows: checklistRows });
+    const entries = {
+      remarks: normalizeEntries(payload.entries?.remarks),
+      recommendations: normalizeEntries(payload.entries?.recommendations),
+      completedWorks: normalizeEntries(payload.entries?.completedWorks),
+    };
+    const children: Array<Paragraph | Table> = [
+      new Paragraph({ spacing: { after: 80 }, children: [new TextRun({ text: "РИК ЛАБ", bold: true, color: "087A9F", size: 20, font: "Arial" })] }),
+      new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [new TextRun({ text: "АКТ ВЫПОЛНЕННЫХ РАБОТ", bold: true, color: "102936", size: 30, font: "Arial" })] }),
+      new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 260 }, children: [new TextRun({ text: "Техническое обслуживание печи", size: 22, color: "355967", font: "Arial" })] }),
+      metadataTable,
+      new Paragraph({ spacing: { before: 260, after: 100 }, children: [new TextRun({ text: "Перечень выполненных работ", bold: true, size: 24, color: "087A9F", font: "Arial" })] }),
+      checklistTable,
+    ];
+    addDocxList(children, "Замечания", entries.remarks);
+    addDocxList(children, "Рекомендации", entries.recommendations);
+    addDocxList(children, "Выполненные работы", entries.completedWorks);
+    children.push(
+      new Paragraph({ spacing: { before: 320, after: 80 }, children: [new TextRun({ text: "Исполнитель: Пахомов А.В.", bold: true, font: "Arial", size: 20, color: "102936" })] }),
+      new Paragraph({ children: [new ImageRun({ type: "png", data: stampBytes, transformation: { width: Math.max(1, Math.round(stampSize.width * stampScale)), height: Math.max(1, Math.round(stampSize.height * stampScale)) } })] }),
+    );
+    const doc = new Document({
+      creator: "ООО «РИК ЛАБ»",
+      title: `Акт ТО печи ${payload.act.objectCode}`,
+      description: "Редактируемый акт технического обслуживания печи",
+      styles: { default: { document: { run: { font: "Arial", size: 20, color: "102936", language: { value: "ru-RU" } }, paragraph: { spacing: { after: 100, line: 252 } } } } },
+      sections: [{
+        properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 900, right: 1080, bottom: 900, left: 1080, header: 450, footer: 450 } } },
+        headers: { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: `Акт ТО печи • ${payload.act.objectCode}`, size: 15, color: "688692", font: "Arial" })] })] }) },
+        footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "ООО «РИК ЛАБ» • редактируемый документ", size: 15, color: "688692", font: "Arial" })] })] }) },
+        children,
+      }],
+    });
+    const blob = await Packer.toBlob(doc);
+    const code = payload.act.objectCode.replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
+    return new Response(blob, { headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "content-disposition": `attachment; filename="oven-act-${code}-${payload.act.date}.docx"`, "cache-control": "no-store" } });
+  } catch (error) {
+    console.error("Failed to generate oven act DOCX", error);
+    return Response.json({ error: "Не удалось сформировать редактируемый акт" }, { status: 500 });
+  }
+}
+
+function actDocxCell(text: string, width: number, bold = false, fill?: string, alignment = AlignmentType.LEFT) {
+  return new TableCell({
+    width: { size: width, type: WidthType.DXA },
+    ...(fill ? { shading: { type: ShadingType.CLEAR, fill } } : {}),
+    children: [new Paragraph({ alignment, spacing: { after: 0, line: 220 }, children: [new TextRun({ text, bold, font: "Arial", size: 17, color: "102936" })] })],
+  });
 }
 
 type ReportMetadata = {
@@ -338,7 +433,10 @@ async function createOvenPhotoReportDocx(request: Request) {
     }
 
     const doc = new Document({
-      styles: { default: { document: { run: { font: "Arial", size: 22, color: "102936" }, paragraph: { spacing: { after: 120, line: 276 } } } } },
+      creator: "ООО «РИК ЛАБ»",
+      title: `Фотоотчёт ТО печи ${metadata.act.objectCode}`,
+      description: "Редактируемый фотоотчёт технического обслуживания печи на русском языке",
+      styles: { default: { document: { run: { font: "Arial", size: 22, color: "102936", language: { value: "ru-RU" } }, paragraph: { spacing: { after: 120, line: 276 } } } } },
       sections: [{
         properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 1080, right: 1080, bottom: 1080, left: 1080, header: 500, footer: 500 } } },
         headers: { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: `РИК ЛАБ • ТО печи ${metadata.act.objectCode}`, size: 16, color: "688692", font: "Arial" })] })] }) },
@@ -372,11 +470,12 @@ async function sendOvenReportEmail(request: Request, env: Env) {
     const formData = await request.formData();
     const metadataValue = formData.get("metadata");
     const act = formData.get("act");
+    const actDocx = formData.get("actDocx");
     const reportPdf = formData.get("reportPdf");
     const reportDocx = formData.get("reportDocx");
     if (typeof metadataValue !== "string") return Response.json({ error: "Не переданы данные отчёта" }, { status: 400 });
-    if (!(act instanceof File) || !(reportPdf instanceof File) || !(reportDocx instanceof File)) {
-      return Response.json({ error: "Сначала сформируйте акт PDF, отчёт PDF и отчёт DOCX" }, { status: 400 });
+    if (!(act instanceof File) || !(actDocx instanceof File) || !(reportPdf instanceof File) || !(reportDocx instanceof File)) {
+      return Response.json({ error: "Сначала сформируйте полный комплект документов" }, { status: 400 });
     }
 
     const metadata = JSON.parse(metadataValue) as EmailMetadata;
@@ -386,9 +485,9 @@ async function sendOvenReportEmail(request: Request, env: Env) {
     const ovenModel = clean(metadata.ovenModel, "модель не указана");
     const ovenPosition = clean(metadata.ovenPosition, "положение не указано");
     const technicianName = clean(metadata.technicianName, "не указан");
-    const attachments = [act, reportPdf, reportDocx];
+    const attachments = [act, actDocx, reportPdf, reportDocx];
     const totalBytes = attachments.reduce((sum, file) => sum + file.size, 0);
-    if (totalBytes > 20_000_000) return Response.json({ error: "Общий размер трёх файлов превышает 20 МБ" }, { status: 413 });
+    if (totalBytes > 22_000_000) return Response.json({ error: "Общий размер четырёх файлов превышает 22 МБ" }, { status: 413 });
     if (attachments.some((file) => !isAllowedEmailAttachment(file))) {
       return Response.json({ error: "К письму можно приложить только PDF и DOCX" }, { status: 400 });
     }
@@ -403,7 +502,7 @@ async function sendOvenReportEmail(request: Request, env: Env) {
       `Печь: ${ovenModel} (${ovenPosition})`,
       `Инженер: ${technicianName}`,
       "",
-      "Во вложении: акт PDF, фотоотчёт PDF и редактируемый фотоотчёт DOCX.",
+      "Во вложении: акт PDF, редактируемый акт DOCX, фотоотчёт PDF и редактируемый фотоотчёт DOCX.",
     ].join("\r\n");
     const parts = [
       `From: ${formatMailbox(env.MAIL_FROM)}`,
