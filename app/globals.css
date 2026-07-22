@@ -214,8 +214,12 @@ footer { padding-top: 20px; border-top: 1px solid var(--line); color: var(--mute
 .compact-save-row { position: sticky; bottom: 10px; z-index: 5; padding: 11px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid var(--line); border-radius: 17px; background: var(--surface-strong); box-shadow: 0 16px 40px rgba(10, 35, 48, .18); backdrop-filter: blur(18px); }
 .compact-save-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 10px; }
 .compact-save-status i { width: 7px; height: 7px; border-radius: 50%; background: #2fa36b; }
-.compact-save-row button { min-height: 44px; padding: 0 18px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font-weight: 800; cursor: pointer; }
-.compact-save-row button:disabled { background: var(--accent-soft); color: var(--muted); cursor: not-allowed; }
+.compact-form-actions { display: flex; align-items: center; gap: 8px; }
+.compact-save-row button { min-height: 44px; padding: 0 16px; border-radius: 12px; font-weight: 800; cursor: pointer; }
+.compact-save-row .save-draft-button { border: 0; background: var(--accent); color: #fff; }
+.compact-save-row .save-draft-button:disabled { background: var(--accent-soft); color: var(--muted); cursor: not-allowed; }
+.compact-save-row .reset-draft-button { border: 1px solid var(--line); background: transparent; color: var(--muted); }
+.compact-save-row .reset-draft-button:hover { border-color: var(--accent); color: var(--accent); }
 
 @media (max-width: 640px) {
   .compact-act-shell { padding-bottom: 32px; }
@@ -229,7 +233,9 @@ footer { padding-top: 20px; border-top: 1px solid var(--line); color: var(--mute
   .compact-field-grid .field input, .compact-field-grid .field select { min-height: 46px; padding: 10px; font-size: 13px; }
   .compact-field-grid .field > span { min-height: 27px; align-items: flex-end; font-size: 9px; }
   .compact-save-status { display: none; }
-  .compact-save-row button { width: 100%; }
+  .compact-form-actions { width: 100%; }
+  .compact-save-row .reset-draft-button { flex: 0 0 auto; padding: 0 12px; font-size: 11px; }
+  .compact-save-row .save-draft-button { flex: 1 1 auto; }
 }
 
 @media (max-width: 380px) {

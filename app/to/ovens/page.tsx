@@ -115,6 +115,13 @@ export default function OvenMaintenancePage() {
     setSaveLabel("Данные акта заполнены и сохранены");
   }
 
+  function resetDraft() {
+    if (!window.confirm("Очистить все заполненные данные акта?")) return;
+    window.localStorage.removeItem(STORAGE_KEY);
+    setForm({ ...initialData, date: localDate() });
+    setSaveLabel("Черновик очищен");
+  }
+
   return (
     <main className="form-shell compact-act-shell">
       <header className="topbar form-topbar compact-topbar">
@@ -152,7 +159,13 @@ export default function OvenMaintenancePage() {
           <div className="act-fixed-meta"><span>Исполнитель: <strong>{form.contractor}</strong></span><span>Вид ТО: <strong>{form.serviceType}</strong></span></div>
         </section>
 
-        <div className="compact-save-row"><span className="compact-save-status"><i aria-hidden="true" /> {saveLabel}</span><button type="submit" disabled={!isComplete}>{isComplete ? "Сохранить" : `Заполнено ${completed} из ${requiredFields.length}`}</button></div>
+        <div className="compact-save-row">
+          <span className="compact-save-status"><i aria-hidden="true" /> {saveLabel}</span>
+          <div className="compact-form-actions">
+            <button className="reset-draft-button" type="button" onClick={resetDraft}>Очистить черновик</button>
+            <button className="save-draft-button" type="submit" disabled={!isComplete}>{isComplete ? "Сохранить" : `Заполнено ${completed} из ${requiredFields.length}`}</button>
+          </div>
+        </div>
       </form>
     </main>
   );
