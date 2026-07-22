@@ -244,6 +244,9 @@ footer { padding-top: 20px; border-top: 1px solid var(--line); color: var(--mute
 }
 
 /* Oven checklist */
+.one-page-act { width: min(820px, 100%); }
+.one-page-form { display: grid; gap: 16px; margin-top: 22px; }
+.act-data-section .checklist-section-heading { margin-bottom: 18px; }
 .back-button { padding: 0; border: 0; background: transparent; cursor: pointer; font: inherit; }
 .checklist-form { display: grid; gap: 16px; margin-top: 22px; }
 .checklist-section { padding: clamp(18px, 3vw, 25px); border: 1px solid var(--line); border-radius: 22px; background: var(--surface); box-shadow: var(--shadow); backdrop-filter: blur(15px); }
@@ -270,6 +273,7 @@ footer { padding-top: 20px; border-top: 1px solid var(--line); color: var(--mute
 .comment-details textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 17%, transparent); }
 
 @media (max-width: 640px) {
+  .one-page-form { margin-top: 18px; gap: 12px; }
   .checklist-heading .compact-title-row { align-items: center; }
   .checklist-form { margin-top: 18px; gap: 12px; }
   .checklist-section { padding: 14px 10px; border-radius: 19px; }
