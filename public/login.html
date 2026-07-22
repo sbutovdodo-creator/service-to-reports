@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#dcecf6">
+  <link rel="icon" href="/favicon.ico">
+  <title>Вход — Сервис ТО</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100svh;display:grid;place-items:center;padding:24px;background:linear-gradient(145deg,#e9f6fc,#cfe8f3);color:#102936;font-family:Arial,sans-serif}.card{width:min(100%,390px);padding:28px;border:1px solid rgba(24,100,130,.18);border-radius:26px;background:rgba(255,255,255,.82);box-shadow:0 24px 70px rgba(25,79,102,.15);backdrop-filter:blur(16px)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:34px}.brand img{width:48px;height:48px;border-radius:12px}.brand strong{display:block;font-size:18px;letter-spacing:.08em}.brand span{color:#61808f;font-size:12px}h1{margin:0 0 8px;font-size:30px}p{margin:0 0 22px;color:#5b7785;line-height:1.45}label{display:grid;gap:7px;margin-top:14px;font-size:12px;font-weight:700}input{width:100%;min-height:50px;padding:12px 14px;border:1px solid #bdd3dd;border-radius:13px;background:#fff;color:#102936;font:inherit;font-size:16px;outline:none}input:focus{border-color:#087a9f;box-shadow:0 0 0 3px rgba(8,122,159,.12)}button{width:100%;min-height:52px;margin-top:22px;border:0;border-radius:13px;background:#087a9f;color:#fff;font:inherit;font-size:15px;font-weight:800;cursor:pointer}.error{min-height:20px;margin:12px 0 0;color:#b23a3a;font-size:12px}[hidden]{display:none}
+    @media(prefers-color-scheme:dark){body{background:linear-gradient(145deg,#071822,#102d3a);color:#eaf7fb}.card{border-color:rgba(150,210,232,.16);background:rgba(11,34,45,.88)}.brand span,p{color:#9bb5c1}input{border-color:#345563;background:#102d3a;color:#fff}}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><img src="/rik-logo.png" alt=""><div><strong>РИК ЛАБ</strong><span>Сервис технического обслуживания</span></div></div>
+    <h1>Вход</h1><p>Введите рабочий логин и пароль, чтобы открыть формы ТО.</p>
+    <form id="login-form"><label>Логин<input name="login" autocomplete="username" required></label><label>Пароль<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">Войти</button><p class="error" id="error" role="alert"></p></form>
+  </main>
+  <script>
+    document.getElementById('login-form').addEventListener('submit',async function(event){event.preventDefault();var button=this.querySelector('button'),error=document.getElementById('error');button.disabled=true;button.textContent='Проверяем…';error.textContent='';try{var data=new FormData(this),response=await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({login:data.get('login'),password:data.get('password')})});if(!response.ok){var result=await response.json().catch(function(){return{}});throw new Error(result.error||'Неверный логин или пароль')}location.reload()}catch(reason){error.textContent=reason.message||'Не удалось войти';button.disabled=false;button.textContent='Войти'}});
+  </script>
+</body>
+</html>

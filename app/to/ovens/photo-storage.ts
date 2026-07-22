@@ -46,16 +46,36 @@ export async function clearStoredPhotos() {
   await transaction<undefined>("readwrite", (store) => store.clear());
 }
 
+async function loadPhotoSource(file: File): Promise<{ source: CanvasImageSource; width: number; height: number; close?: () => void }> {
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+      return { source: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() };
+    } catch { /* Safari can decode HEIC through an image element even when createImageBitmap cannot */ }
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = url;
+    await image.decode();
+    return { source: image, width: image.naturalWidth, height: image.naturalHeight, close: () => URL.revokeObjectURL(url) };
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  }
+}
+
 export async function compressPhoto(file: File) {
-  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  const decoded = await loadPhotoSource(file);
   const maxSide = 1600;
-  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const scale = Math.min(1, maxSide / Math.max(decoded.width, decoded.height));
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.width = Math.max(1, Math.round(decoded.width * scale));
+  canvas.height = Math.max(1, Math.round(decoded.height * scale));
   const context = canvas.getContext("2d");
   if (!context) throw new Error("Не удалось обработать фотографию");
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
+  context.drawImage(decoded.source, 0, 0, canvas.width, canvas.height);
+  decoded.close?.();
   return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Не удалось сжать фотографию")), "image/jpeg", 0.82));
 }

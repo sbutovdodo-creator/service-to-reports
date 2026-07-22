@@ -3,11 +3,15 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, PDFFont, PDFImage, rgb } from "pdf-lib";
+import { AlignmentType, Document, Footer, Header, ImageRun, Packer, PageBreak, Paragraph, ShadingType, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
 
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   PRIVATE_FILES: R2Bucket;
+  APP_AUTH_LOGIN?: string;
+  APP_AUTH_PASSWORD?: string;
+  APP_AUTH_SECRET?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -32,11 +36,23 @@ const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    if (url.pathname === "/api/auth/login" && request.method === "POST") return login(request, env);
+    if (url.pathname === "/api/auth/logout" && request.method === "POST") return logout();
+    const publicAsset = url.pathname === "/login.html" || url.pathname === "/rik-logo.png" || url.pathname === "/favicon.ico" || url.pathname === "/og.png" || url.pathname.startsWith("/assets/");
+    if (!publicAsset && !(await isAuthenticated(request, env))) {
+      if (url.pathname.startsWith("/api/")) return Response.json({ error: "Требуется вход" }, { status: 401 });
+      const loginRequest = new Request(new URL("/login.html", request.url));
+      return env.ASSETS ? env.ASSETS.fetch(loginRequest) : fetch(loginRequest);
+    }
+
     if (url.pathname === "/api/oven-act/pdf" && request.method === "POST") {
       return createOvenActPdf(request, env);
     }
     if (url.pathname === "/api/oven-report/pdf" && request.method === "POST") {
       return createOvenPhotoReport(request, env);
+    }
+    if (url.pathname === "/api/oven-report/docx" && request.method === "POST") {
+      return createOvenPhotoReportDocx(request);
     }
 
     if (url.pathname === "/_vinext/image") {
@@ -53,6 +69,33 @@ const worker = {
     return handler.fetch(request, env, ctx);
   },
 };
+
+const AUTH_COOKIE = "riklab_session";
+
+async function login(request: Request, env: Env) {
+  if (!env.APP_AUTH_LOGIN || !env.APP_AUTH_PASSWORD || !env.APP_AUTH_SECRET) return Response.json({ error: "Вход ещё не настроен" }, { status: 503 });
+  const body = await request.json().catch(() => ({})) as { login?: string; password?: string };
+  if (body.login !== env.APP_AUTH_LOGIN || body.password !== env.APP_AUTH_PASSWORD) return Response.json({ error: "Неверный логин или пароль" }, { status: 401 });
+  const token = await createAuthToken(env.APP_AUTH_SECRET);
+  return new Response(null, { status: 204, headers: { "set-cookie": `${AUTH_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`, "cache-control": "no-store" } });
+}
+
+function logout() {
+  return new Response(null, { status: 204, headers: { "set-cookie": `${AUTH_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`, "cache-control": "no-store" } });
+}
+
+async function isAuthenticated(request: Request, env: Env) {
+  if (!env.APP_AUTH_SECRET) return false;
+  const match = request.headers.get("cookie")?.match(new RegExp(`(?:^|;\\s*)${AUTH_COOKIE}=([^;]+)`));
+  if (!match) return false;
+  return match[1] === await createAuthToken(env.APP_AUTH_SECRET);
+}
+
+async function createAuthToken(secret: string) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode("riklab-service-v1")));
+  return Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 type PdfPayload = {
   act: { date: string; contractor: string; customer: string; objectCode: string; pizzeriaAddress: string; serviceType: string; ovenModel: string; ovenPosition: string; serialNumber: string; technicianName: string };
@@ -192,31 +235,27 @@ async function createOvenPhotoReport(request: Request, env: Env) {
     ({ page, y } = drawReportList(pdf, page, font, y, "Рекомендуемые работы", entries.recommendations, pageSize));
     ({ page, y } = drawReportList(pdf, page, font, y, "Замечания", entries.remarks, pageSize));
 
-    const photoMetadata = Array.isArray(metadata.photos) ? metadata.photos.filter((item) => photoFiles.has(item.key)).slice(0, 30) : [];
-    for (let index = 0; index < photoMetadata.length; index += 2) {
+    const photoMetadata = Array.isArray(metadata.photos) ? metadata.photos.filter((item) => photoFiles.has(item.key)) : [];
+    for (let index = 0; index < photoMetadata.length; index += 1) {
       const photoPage = pdf.addPage(pageSize);
       photoPage.drawText("Фотоотчёт по ТО печи", { x: 48, y: 798, size: 12, font, color: rgb(0.04, 0.13, 0.18) });
-      for (let slotIndex = 0; slotIndex < 2; slotIndex += 1) {
-        const item = photoMetadata[index + slotIndex];
-        if (!item) break;
-        const file = photoFiles.get(item.key)!;
-        let photo: PDFImage;
-        const bytes = await file.arrayBuffer();
-        if (file.type === "image/png") photo = await pdf.embedPng(bytes);
-        else photo = await pdf.embedJpg(bytes);
-        const blockTop = slotIndex === 0 ? 758 : 390;
-        const title = String(item.title || item.key).slice(0, 180);
-        const titleLines = wrapText(title, font, 9, 500).slice(0, 2);
-        titleLines.forEach((line, lineIndex) => photoPage.drawText(line, { x: 48, y: blockTop - lineIndex * 12, size: 9, font, color: rgb(0.05, 0.13, 0.17) }));
-        const maxWidth = 500;
-        const maxHeight = 300;
-        const scale = Math.min(maxWidth / photo.width, maxHeight / photo.height);
-        const width = photo.width * scale;
-        const height = photo.height * scale;
-        const imageTop = blockTop - titleLines.length * 12 - 10;
-        photoPage.drawRectangle({ x: 47, y: imageTop - maxHeight - 1, width: 502, height: maxHeight + 2, borderWidth: 0.5, borderColor: rgb(0.82, 0.86, 0.88) });
-        photoPage.drawImage(photo, { x: 48 + (maxWidth - width) / 2, y: imageTop - height, width, height });
-      }
+      const item = photoMetadata[index];
+      const file = photoFiles.get(item.key)!;
+      let photo: PDFImage;
+      const bytes = await file.arrayBuffer();
+      if (file.type === "image/png") photo = await pdf.embedPng(bytes);
+      else photo = await pdf.embedJpg(bytes);
+      const title = String(item.title || item.key).slice(0, 180);
+      const titleLines = wrapText(title, font, 10, 500).slice(0, 2);
+      titleLines.forEach((line, lineIndex) => photoPage.drawText(line, { x: 48, y: 762 - lineIndex * 14, size: 10, font, color: rgb(0.05, 0.13, 0.17) }));
+      const imageTop = 762 - titleLines.length * 14 - 12;
+      const maxWidth = 500;
+      const maxHeight = imageTop - 50;
+      const scale = Math.min(maxWidth / photo.width, maxHeight / photo.height);
+      const width = photo.width * scale;
+      const height = photo.height * scale;
+      photoPage.drawRectangle({ x: 47, y: 43, width: 502, height: maxHeight + 2, borderWidth: 0.5, borderColor: rgb(0.82, 0.86, 0.88) });
+      photoPage.drawImage(photo, { x: 48 + (maxWidth - width) / 2, y: 44 + (maxHeight - height) / 2, width, height });
     }
 
     const pages = pdf.getPages();
@@ -228,6 +267,109 @@ async function createOvenPhotoReport(request: Request, env: Env) {
     console.error("Failed to generate oven photo report", error);
     return Response.json({ error: "Не удалось сформировать фотоотчёт" }, { status: 500 });
   }
+}
+
+async function createOvenPhotoReportDocx(request: Request) {
+  try {
+    const formData = await request.formData();
+    const metadataValue = formData.get("metadata");
+    if (typeof metadataValue !== "string") return Response.json({ error: "Не переданы данные фотоотчёта" }, { status: 400 });
+    const metadata = JSON.parse(metadataValue) as ReportMetadata;
+    if (!metadata.act?.date || !metadata.act?.objectCode || !metadata.act?.ovenModel || !metadata.act?.ovenPosition || !metadata.act?.technicianName) return Response.json({ error: "Сначала заполните данные акта" }, { status: 400 });
+    const photoFiles = new Map<string, File>();
+    let totalBytes = 0;
+    for (const [key, value] of formData.entries()) {
+      if (!key.startsWith("photo:") || typeof value === "string") continue;
+      const photoKey = key.slice(6);
+      if (!/^[-a-z0-9]+$/.test(photoKey) || value.size > 4_000_000) return Response.json({ error: "Одна из фотографий слишком большая" }, { status: 413 });
+      totalBytes += value.size;
+      photoFiles.set(photoKey, value);
+    }
+    if (totalBytes > 60_000_000) return Response.json({ error: "Общий размер фотографий слишком большой" }, { status: 413 });
+    if (REQUIRED_REPORT_PHOTOS.some((key) => !photoFiles.has(key))) return Response.json({ error: "Добавлены не все обязательные фотографии" }, { status: 400 });
+
+    const entries = {
+      remarks: normalizeEntries(metadata.entries?.remarks),
+      recommendations: normalizeEntries(metadata.entries?.recommendations),
+      completedWorks: normalizeEntries(metadata.entries?.completedWorks),
+    };
+    const [year, month, day] = metadata.act.date.split("-");
+    const metadataRows = [
+      ["Объект", `${metadata.act.pizzeriaAddress} (${metadata.act.objectCode})`],
+      ["Дата", [day, month, year].filter(Boolean).join(".")],
+      ["Печь", `${metadata.act.ovenModel} (${metadata.act.ovenPosition})`],
+      ["Инженер", metadata.act.technicianName],
+      ["Заказчик", metadata.act.customer || "Не указан"],
+    ];
+    const children: Array<Paragraph | Table> = [
+      new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "ФОТООТЧЁТ", bold: true, color: "087A9F", size: 20, font: "Arial" })] }),
+      new Paragraph({ spacing: { after: 300 }, children: [new TextRun({ text: "Техническое обслуживание печи", bold: true, color: "102936", size: 40, font: "Arial" })] }),
+      new Table({
+        width: { size: 9360, type: WidthType.DXA },
+        columnWidths: [2000, 7360],
+        rows: metadataRows.map(([label, value]) => new TableRow({ children: [
+          new TableCell({ width: { size: 2000, type: WidthType.DXA }, shading: { type: ShadingType.CLEAR, fill: "E8F3F7" }, children: [new Paragraph({ children: [new TextRun({ text: label, bold: true, size: 20, font: "Arial", color: "355967" })] })] }),
+          new TableCell({ width: { size: 7360, type: WidthType.DXA }, children: [new Paragraph({ children: [new TextRun({ text: value, size: 20, font: "Arial", color: "102936" })] })] }),
+        ] })),
+      }),
+    ];
+    addDocxList(children, "Работы сверх чек-листа", entries.completedWorks);
+    addDocxList(children, "Рекомендуемые работы", entries.recommendations);
+    addDocxList(children, "Замечания", entries.remarks);
+
+    const photoMetadata = Array.isArray(metadata.photos) ? metadata.photos.filter((item) => photoFiles.has(item.key)) : [];
+    for (const [index, item] of photoMetadata.entries()) {
+      const file = photoFiles.get(item.key)!;
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const dimensions = readImageDimensions(bytes, file.type);
+      const scale = Math.min(600 / dimensions.width, 750 / dimensions.height);
+      children.push(new Paragraph({ children: [new PageBreak()] }));
+      children.push(new Paragraph({ spacing: { after: 140 }, children: [new TextRun({ text: `${index + 1}. ${String(item.title || item.key).slice(0, 180)}`, bold: true, size: 24, font: "Arial", color: "102936" })] }));
+      children.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ type: file.type === "image/png" ? "png" : "jpg", data: bytes, transformation: { width: Math.max(1, Math.round(dimensions.width * scale)), height: Math.max(1, Math.round(dimensions.height * scale)) } })] }));
+    }
+
+    const doc = new Document({
+      styles: { default: { document: { run: { font: "Arial", size: 22, color: "102936" }, paragraph: { spacing: { after: 120, line: 276 } } } } },
+      sections: [{
+        properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 1080, right: 1080, bottom: 1080, left: 1080, header: 500, footer: 500 } } },
+        headers: { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: `РИК ЛАБ • ТО печи ${metadata.act.objectCode}`, size: 16, color: "688692", font: "Arial" })] })] }) },
+        footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "Редактируемый фотоотчёт", size: 16, color: "688692", font: "Arial" })] })] }) },
+        children,
+      }],
+    });
+    const blob = await Packer.toBlob(doc);
+    const code = metadata.act.objectCode.replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
+    return new Response(blob, { headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "content-disposition": `attachment; filename="oven-photo-report-${code}-${metadata.act.date}.docx"`, "cache-control": "no-store" } });
+  } catch (error) {
+    console.error("Failed to generate oven photo report DOCX", error);
+    return Response.json({ error: "Не удалось сформировать редактируемый отчёт" }, { status: 500 });
+  }
+}
+
+function addDocxList(children: Array<Paragraph | Table>, title: string, values: string[]) {
+  children.push(new Paragraph({ spacing: { before: 260, after: 100 }, children: [new TextRun({ text: title, bold: true, size: 26, color: "087A9F", font: "Arial" })] }));
+  if (!values.length) {
+    children.push(new Paragraph({ children: [new TextRun({ text: "Не указаны", italics: true, color: "688692", font: "Arial" })] }));
+    return;
+  }
+  values.forEach((value) => children.push(new Paragraph({ bullet: { level: 0 }, children: [new TextRun({ text: value, font: "Arial", size: 22 })] })));
+}
+
+function readImageDimensions(bytes: Uint8Array, mimeType: string) {
+  if (mimeType === "image/png" && bytes.length > 24) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return { width: view.getUint32(16), height: view.getUint32(20) };
+  }
+  let offset = 2;
+  while (offset + 9 < bytes.length) {
+    if (bytes[offset] !== 0xff) { offset += 1; continue; }
+    const marker = bytes[offset + 1];
+    const length = (bytes[offset + 2] << 8) + bytes[offset + 3];
+    if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) return { height: (bytes[offset + 5] << 8) + bytes[offset + 6], width: (bytes[offset + 7] << 8) + bytes[offset + 8] };
+    if (!length) break;
+    offset += 2 + length;
+  }
+  return { width: 1600, height: 1200 };
 }
 
 function drawReportList(pdf: PDFDocument, initialPage: ReturnType<PDFDocument["getPages"]>[number], font: PDFFont, initialY: number, title: string, values: string[], pageSize: [number, number]) {

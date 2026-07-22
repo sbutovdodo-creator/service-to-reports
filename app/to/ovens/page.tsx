@@ -31,6 +31,7 @@ const STORAGE_KEY = "oven-act-draft-v2";
 const CHECKLIST_KEY = "oven-checklist-draft-v1";
 const ACT_ENTRIES_KEY = "oven-act-entries-draft-v1";
 const STEP_KEY = "oven-maintenance-step-v1";
+const EXTRA_PHOTO_PREFIX = "extra-work-";
 const technicians = ["Давыдов Алексей", "Кусков Сергей", "Пахомов Александр", "Рубцов Алексей", "Фефелов Сергей", "Эсанов Бахром", "Эсанбоев Анвар"];
 const ovenModels = ["XLT3240", "Robochef", "Zanolli 11/65", "Turbochef"];
 
@@ -78,6 +79,8 @@ export default function OvenMaintenancePage() {
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [generatedPdf, setGeneratedPdf] = useState<File | null>(null);
   const [generatedReport, setGeneratedReport] = useState<File | null>(null);
+  const [generatedReportDocx, setGeneratedReportDocx] = useState<File | null>(null);
+  const [isGeneratingDocx, setIsGeneratingDocx] = useState(false);
   const [pdfError, setPdfError] = useState("");
   const [photos, setPhotos] = useState<Record<string, StoredPhoto>>({});
   const [photoError, setPhotoError] = useState("");
@@ -148,6 +151,7 @@ export default function OvenMaintenancePage() {
   const isComplete = totalCompleted === totalRequired;
   const completedRequiredPhotos = requiredPhotoSlots.filter((slot) => photos[slot.key]).length;
   const reportIsComplete = isComplete && completedRequiredPhotos === requiredPhotoSlots.length;
+  const extraPhotos = Object.values(photos).filter((photo) => photo.key.startsWith(EXTRA_PHOTO_PREFIX)).sort((left, right) => left.updatedAt - right.updatedAt);
 
   function updateField<K extends keyof ActData>(field: K, value: ActData[K]) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -173,8 +177,9 @@ export default function OvenMaintenancePage() {
       await saveStoredPhoto(key, blob);
       setPhotos((current) => ({ ...current, [key]: { key, blob, updatedAt: Date.now() } }));
       setGeneratedReport(null);
+      setGeneratedReportDocx(null);
     } catch {
-      setPhotoError("Не удалось обработать фото. Сделайте снимок камерой телефона в формате JPEG.");
+      setPhotoError("Не удалось прочитать изображение. Попробуйте выбрать его из приложения «Фото» или сделать новый снимок камерой.");
     } finally {
       setProcessingPhoto(null);
     }
@@ -188,6 +193,27 @@ export default function OvenMaintenancePage() {
       return next;
     });
     setGeneratedReport(null);
+    setGeneratedReportDocx(null);
+  }
+
+  async function addExtraPhotos(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    for (const [index, file] of files.entries()) {
+      const key = `${EXTRA_PHOTO_PREFIX}${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`;
+      setProcessingPhoto(key);
+      setPhotoError("");
+      try {
+        const blob = await compressPhoto(file);
+        await saveStoredPhoto(key, blob);
+        setPhotos((current) => ({ ...current, [key]: { key, blob, updatedAt: Date.now() + index } }));
+        setGeneratedReport(null);
+        setGeneratedReportDocx(null);
+      } catch {
+        setPhotoError("Одно из изображений не удалось прочитать. Попробуйте выбрать его из приложения «Фото».");
+      }
+    }
+    setProcessingPhoto(null);
   }
 
   function updateActEntry(section: keyof ActEntries, index: number, value: string) {
@@ -210,6 +236,11 @@ export default function OvenMaintenancePage() {
     setTheme(next);
     document.documentElement.dataset.theme = next;
     window.localStorage.setItem("to-theme", next);
+  }
+
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/";
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -246,45 +277,51 @@ export default function OvenMaintenancePage() {
     }
   }
 
-  async function generateReport() {
+  function createReportBody() {
+    const regularItems = allPhotoSlots.filter((slot) => photos[slot.key]).map((slot) => ({ key: slot.key, title: `${slot.requirementTitle} — ${slot.label}`, required: slot.required }));
+    const extraItems = extraPhotos.map((photo, index) => ({ key: photo.key, title: `Дополнительные работы — фото ${index + 1}`, required: false }));
+    const photoItems = [...regularItems, ...extraItems];
+    const body = new FormData();
+    body.append("metadata", JSON.stringify({ act: form, entries: actEntries, photos: photoItems }));
+    photoItems.forEach((item) => body.append(`photo:${item.key}`, photos[item.key].blob, `${item.key}.jpg`));
+    return body;
+  }
+
+  async function generateReport(format: "pdf" | "docx") {
     if (!reportIsComplete) return;
-    setIsGeneratingReport(true);
+    if (format === "pdf") setIsGeneratingReport(true); else setIsGeneratingDocx(true);
     setPdfError("");
     try {
-      const photoItems = allPhotoSlots.filter((slot) => photos[slot.key]).map((slot) => ({ key: slot.key, title: `${slot.requirementTitle} — ${slot.label}`, required: slot.required }));
-      const body = new FormData();
-      body.append("metadata", JSON.stringify({ act: form, entries: actEntries, photos: photoItems }));
-      photoItems.forEach((item) => body.append(`photo:${item.key}`, photos[item.key].blob, `${item.key}.jpg`));
-      const response = await fetch("/api/oven-report/pdf", { method: "POST", body });
+      const response = await fetch(`/api/oven-report/${format}`, { method: "POST", body: createReportBody() });
       if (!response.ok) {
         const result = await response.json().catch(() => ({ error: "Не удалось сформировать фотоотчёт" }));
         throw new Error(result.error || "Не удалось сформировать фотоотчёт");
       }
       const blob = await response.blob();
-      const fileName = `Фотоотчёт-ТО-печи-${form.objectCode}-${form.ovenPosition}-${form.date}.pdf`;
-      const file = new File([blob], fileName, { type: "application/pdf" });
-      setGeneratedReport(file);
+      const fileName = `Фотоотчёт-ТО-печи-${form.objectCode}-${form.ovenPosition}-${form.date}.${format}`;
+      const file = new File([blob], fileName, { type: format === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+      if (format === "pdf") setGeneratedReport(file); else setGeneratedReportDocx(file);
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
       link.download = fileName;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(link.href), 2_000);
-      setSaveLabel("Фотоотчёт сформирован и скачан");
+      setSaveLabel(`Фотоотчёт ${format.toUpperCase()} сформирован и скачан`);
     } catch (error) {
       setPdfError(error instanceof Error ? error.message : "Не удалось сформировать фотоотчёт");
     } finally {
-      setIsGeneratingReport(false);
+      if (format === "pdf") setIsGeneratingReport(false); else setIsGeneratingDocx(false);
     }
   }
 
   async function sharePdf() {
-    const files = [generatedPdf, generatedReport].filter((file): file is File => Boolean(file));
+    const files = [generatedPdf, generatedReport, generatedReportDocx].filter((file): file is File => Boolean(file));
     if (!files.length) return;
     const shareData = { files, title: `ТО печи ${form.objectCode}`, text: "Акт и фотоотчёт необходимо отправить на info@riklab.ru" };
     if (navigator.share && (!navigator.canShare || navigator.canShare(shareData))) {
       await navigator.share(shareData).catch(() => undefined);
     } else {
-      window.location.href = `mailto:info@riklab.ru?subject=${encodeURIComponent(`ТО печи ${form.objectCode}`)}&body=${encodeURIComponent("PDF-файлы скачаны на устройство. Прикрепите их к этому письму.")}`;
+      window.location.href = `mailto:info@riklab.ru?subject=${encodeURIComponent(`ТО печи ${form.objectCode}`)}&body=${encodeURIComponent("Акт, PDF- и DOCX-отчёты скачаны на устройство. Прикрепите их к этому письму.")}`;
     }
   }
 
@@ -300,6 +337,7 @@ export default function OvenMaintenancePage() {
     setPhotos({});
     setGeneratedPdf(null);
     setGeneratedReport(null);
+    setGeneratedReportDocx(null);
     setPdfError("");
     setSaveLabel("Черновик очищен");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -309,7 +347,7 @@ export default function OvenMaintenancePage() {
     <main className="form-shell compact-act-shell one-page-act">
       <header className="topbar form-topbar compact-topbar">
         <a className="brand" href="/" aria-label="Вернуться к выбору ТО"><img className="brand-logo" src="/rik-logo.png" alt="" width="42" height="42" /><span className="brand-copy"><strong>РИК ЛАБ</strong><small>Сервис ТО</small></span></a>
-        <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label="Переключить тему"><span aria-hidden="true" className="theme-symbol">{theme === "dark" ? "☀" : "◐"}</span></button>
+        <div className="topbar-actions"><button className="logout-button" type="button" onClick={logout}>Выйти</button><button className="theme-toggle" type="button" onClick={toggleTheme} aria-label="Переключить тему"><span aria-hidden="true" className="theme-symbol">{theme === "dark" ? "☀" : "◐"}</span></button></div>
       </header>
 
       <div className="compact-heading">
@@ -323,6 +361,14 @@ export default function OvenMaintenancePage() {
           <div className="checklist-section-heading"><span>01</span><div><h2 id="photo-report-title">Обязательные фотографии</h2><p>{completedRequiredPhotos} из {requiredPhotoSlots.length} обязательных фото добавлено</p></div></div>
           <div className="photo-progress" aria-hidden="true"><span style={{ width: `${requiredPhotoSlots.length ? completedRequiredPhotos / requiredPhotoSlots.length * 100 : 0}%` }} /></div>
           <div className="photo-requirements">{photoRequirements.map((requirement, index) => <PhotoRequirementRow requirement={requirement} index={index} photos={photos} processingPhoto={processingPhoto} onChange={handlePhotoChange} onDelete={deletePhoto} key={requirement.id} />)}</div>
+          <article className="photo-requirement-row extra-photo-row">
+            <div className="photo-requirement-copy"><span>{String(photoRequirements.length + 1).padStart(2, "0")}</span><div><strong>Дополнительные работы</strong><small>Добавьте столько фотографий, сколько необходимо</small></div></div>
+            <div className="extra-photo-actions">
+              <label className="camera-action">Камера<input type="file" accept="image/*,.heic,.heif,.avif,.webp" capture="environment" onChange={addExtraPhotos} /></label>
+              <label className="gallery-action">Галерея<input type="file" accept="image/*,.heic,.heif,.avif,.webp" multiple onChange={addExtraPhotos} /></label>
+            </div>
+            {extraPhotos.length > 0 && <div className="extra-photo-grid">{extraPhotos.map((photo, index) => <PhotoSlotButton slot={{ key: photo.key, label: `Фото ${index + 1}`, required: false }} photo={photo} processing={processingPhoto === photo.key} onChange={handlePhotoChange} onDelete={deletePhoto} key={photo.key} />)}</div>}
+          </article>
           {photoError && <p className="pdf-error" role="alert">{photoError}</p>}
           <p className="photo-storage-note">Обязательные фото нужны только для формирования отдельного фотоотчёта. Условные фотографии помечены как необязательные.</p>
         </section>
@@ -366,8 +412,9 @@ export default function OvenMaintenancePage() {
           <span className="compact-save-status"><i aria-hidden="true" /> {saveLabel}</span>
           <div className="compact-form-actions">
             <button className="reset-draft-button" type="button" onClick={resetDraft}>Очистить</button>
-            {(generatedPdf || generatedReport) && <button className="share-act-button" type="button" onClick={sharePdf}>Поделиться</button>}
-            <button className="report-button" type="button" onClick={generateReport} disabled={!reportIsComplete || isGeneratingReport}>{isGeneratingReport ? "Отчёт…" : reportIsComplete ? "Фотоотчёт PDF" : `Фото ${completedRequiredPhotos}/${requiredPhotoSlots.length}`}</button>
+            {(generatedPdf || generatedReport || generatedReportDocx) && <button className="share-act-button" type="button" onClick={sharePdf}>Отправить на почту</button>}
+            <button className="report-button" type="button" onClick={() => generateReport("docx")} disabled={!reportIsComplete || isGeneratingDocx}>{isGeneratingDocx ? "DOCX…" : "Отчёт DOCX"}</button>
+            <button className="report-button" type="button" onClick={() => generateReport("pdf")} disabled={!reportIsComplete || isGeneratingReport}>{isGeneratingReport ? "PDF…" : reportIsComplete ? "Отчёт PDF" : `Фото ${completedRequiredPhotos}/${requiredPhotoSlots.length}`}</button>
             <button className="save-draft-button" type="submit" disabled={!isComplete || isGenerating}>{isGenerating ? "Акт…" : isComplete ? "Акт PDF" : `${totalCompleted} из ${totalRequired}`}</button>
           </div>
         </div>
@@ -395,12 +442,13 @@ function PhotoSlotButton({ slot, photo, processing, onChange, onDelete }: { slot
   }, [photo]);
   return (
     <div className={`photo-slot${photo ? " has-photo" : ""}`}>
-      <label>
-        {preview && <img src={preview} alt="" />}
-        <span>{processing ? "Обработка…" : photo ? `✓ ${slot.label}` : `+ ${slot.label}`}</span>
-        {!slot.required && !photo && <small>необязательно</small>}
-        <input type="file" accept="image/*" capture="environment" onChange={(event) => onChange(slot.key, event)} disabled={processing} />
-      </label>
+      {preview && <img src={preview} alt="" />}
+      <strong>{processing ? "Обработка…" : photo ? `✓ ${slot.label}` : slot.label}</strong>
+      {!slot.required && !photo && <small>необязательно</small>}
+      <div className="photo-source-actions">
+        <label className="camera-action">Сделать фото<input type="file" accept="image/*,.heic,.heif,.avif,.webp" capture="environment" onChange={(event) => onChange(slot.key, event)} disabled={processing} /></label>
+        <label className="gallery-action">Выбрать файл<input type="file" accept="image/*,.heic,.heif,.avif,.webp" onChange={(event) => onChange(slot.key, event)} disabled={processing} /></label>
+      </div>
       {photo && <button type="button" onClick={() => onDelete(slot.key)} aria-label={`Удалить фото: ${slot.label}`}>×</button>}
     </div>
   );

@@ -26,9 +26,7 @@ export const photoRequirements: PhotoRequirement[] = [
   { id: "filters", title: "Заменённые или вымытые фильтры", slots: [{ key: "filters", label: "После", required: true }] },
   { id: "heater-measures", title: "Замеры нагрузки и сопротивления ТЭНов", slots: [{ key: "heater-load", label: "Нагрузка", required: true }, { key: "heater-resistance", label: "Сопротивление", required: true }] },
   { id: "voltage-measures", title: "Замеры напряжения", slots: [{ key: "phase-voltage", label: "На фазах", required: true }, { key: "psu-voltage", label: "Выход БП", required: true }] },
-  { id: "extra-work", title: "Дополнительные работы", note: "Если выполнялись", slots: [{ key: "extra-before", label: "До", required: false }, { key: "extra-after", label: "После", required: false }] },
 ];
 
 export const allPhotoSlots = photoRequirements.flatMap((requirement) => requirement.slots.map((slot) => ({ ...slot, requirementTitle: requirement.title })));
 export const requiredPhotoSlots = allPhotoSlots.filter((slot) => slot.required);
-

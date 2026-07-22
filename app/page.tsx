@@ -67,6 +67,11 @@ export default function Home() {
     window.localStorage.setItem("to-theme", next);
   }
 
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.reload();
+  }
+
   return (
     <main className="site-shell">
       <header className="topbar">
@@ -77,17 +82,13 @@ export default function Home() {
             <small>Сервис ТО</small>
           </span>
         </a>
-        <button
-          className="theme-toggle"
-          type="button"
-          onClick={toggleTheme}
-          aria-label={theme === "light" ? "Включить тёмную тему" : "Включить светлую тему"}
-          title={theme === "light" ? "Тёмная тема" : "Светлая тема"}
-        >
-          <span aria-hidden="true" className="theme-symbol">
-            {ready && theme === "dark" ? "☀" : "◐"}
-          </span>
-        </button>
+        <div className="topbar-actions"><button className="logout-button" type="button" onClick={logout}>Выйти</button><button
+            className="theme-toggle"
+            type="button"
+            onClick={toggleTheme}
+            aria-label={theme === "light" ? "Включить тёмную тему" : "Включить светлую тему"}
+            title={theme === "light" ? "Тёмная тема" : "Светлая тема"}
+          ><span aria-hidden="true" className="theme-symbol">{ready && theme === "dark" ? "☀" : "◐"}</span></button></div>
       </header>
 
       <section className="hero" aria-labelledby="page-title">
