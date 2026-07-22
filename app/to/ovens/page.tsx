@@ -76,11 +76,6 @@ export default function OvenMaintenancePage() {
   const [hydrated, setHydrated] = useState(false);
   const [saveLabel, setSaveLabel] = useState("Автосохранение включено");
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generatedPdf, setGeneratedPdf] = useState<File | null>(null);
-  const [generatedActDocx, setGeneratedActDocx] = useState<File | null>(null);
-  const [generatedReport, setGeneratedReport] = useState<File | null>(null);
-  const [generatedReportDocx, setGeneratedReportDocx] = useState<File | null>(null);
-  const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [pdfError, setPdfError] = useState("");
   const [photos, setPhotos] = useState<Record<string, StoredPhoto>>({});
   const [photoError, setPhotoError] = useState("");
@@ -269,18 +264,26 @@ export default function OvenMaintenancePage() {
       const reportPdf = await fetchFile("/api/oven-report/pdf", createReportBody(), `Фотоотчёт-ТО-печи-${baseName}.pdf`, "application/pdf");
       setSaveLabel("Формируем фотоотчёт DOCX — 4 из 4");
       const reportDocx = await fetchFile("/api/oven-report/docx", createReportBody(), `Фотоотчёт-ТО-печи-${baseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-      setGeneratedPdf(actPdf);
-      setGeneratedActDocx(actDocx);
-      setGeneratedReport(reportPdf);
-      setGeneratedReportDocx(reportDocx);
-      for (const file of [actPdf, actDocx, reportPdf, reportDocx]) {
-        const link = document.createElement("a");
-        link.href = URL.createObjectURL(file);
-        link.download = file.name;
-        link.click();
-        window.setTimeout(() => URL.revokeObjectURL(link.href), 5_000);
+      setSaveLabel("Упаковываем ZIP и отправляем на почту…");
+      const deliveryBody = new FormData();
+      deliveryBody.append("metadata", JSON.stringify({ objectCode: form.objectCode, date: form.date, serviceType: "ТО печи", pizzeriaAddress: form.pizzeriaAddress, ovenModel: form.ovenModel, ovenPosition: form.ovenPosition, technicianName: form.technicianName }));
+      deliveryBody.append("act", actPdf, actPdf.name);
+      deliveryBody.append("actDocx", actDocx, actDocx.name);
+      deliveryBody.append("reportPdf", reportPdf, reportPdf.name);
+      deliveryBody.append("reportDocx", reportDocx, reportDocx.name);
+      const deliveryResponse = await fetch("/api/oven-report/email", { method: "POST", body: deliveryBody });
+      if (!deliveryResponse.ok) {
+        const result = await deliveryResponse.json().catch(() => ({ error: "Не удалось отправить архив" }));
+        throw new Error(result.error || "Не удалось отправить архив");
       }
-      setSaveLabel("Четыре документа сформированы и скачаны");
+      const archive = await deliveryResponse.blob();
+      const archiveName = `ТО-печи-${form.objectCode}-${form.date}.zip`;
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(archive);
+      link.download = archiveName;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 5_000);
+      setSaveLabel("ZIP скачан и отправлен на info@riklab.ru");
     } catch (error) {
       setPdfError(error instanceof Error ? error.message : "Не удалось сформировать документы");
     } finally {
@@ -298,31 +301,6 @@ export default function OvenMaintenancePage() {
     return body;
   }
 
-  async function sendEmail() {
-    if (!generatedPdf || !generatedActDocx || !generatedReport || !generatedReportDocx) {
-      setPdfError("Сначала сформируйте полный комплект документов");
-      return;
-    }
-    setIsSendingEmail(true);
-    setPdfError("");
-    try {
-      const body = new FormData();
-      body.append("metadata", JSON.stringify({ objectCode: form.objectCode, date: form.date, ovenModel: form.ovenModel, ovenPosition: form.ovenPosition, technicianName: form.technicianName }));
-      body.append("act", generatedPdf, generatedPdf.name);
-      body.append("actDocx", generatedActDocx, generatedActDocx.name);
-      body.append("reportPdf", generatedReport, generatedReport.name);
-      body.append("reportDocx", generatedReportDocx, generatedReportDocx.name);
-      const response = await fetch("/api/oven-report/email", { method: "POST", body });
-      const result = await response.json().catch(() => ({ error: "Не удалось отправить письмо" }));
-      if (!response.ok) throw new Error(result.error || "Не удалось отправить письмо");
-      setSaveLabel("Акт и отчёты отправлены на info@riklab.ru");
-    } catch (error) {
-      setPdfError(error instanceof Error ? error.message : "Не удалось отправить письмо");
-    } finally {
-      setIsSendingEmail(false);
-    }
-  }
-
   function resetDraft() {
     if (!window.confirm("Очистить данные акта, все галочки и комментарии?")) return;
     window.localStorage.removeItem(STORAGE_KEY);
@@ -333,11 +311,6 @@ export default function OvenMaintenancePage() {
     setActEntries(emptyActEntries());
     clearStoredPhotos().catch(() => undefined);
     setPhotos({});
-    setGeneratedPdf(null);
-    setGeneratedActDocx(null);
-    setGeneratedReport(null);
-    setGeneratedReportDocx(null);
-    setIsSendingEmail(false);
     setPdfError("");
     setSaveLabel("Черновик очищен");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -412,8 +385,7 @@ export default function OvenMaintenancePage() {
           <span className="compact-save-status"><i aria-hidden="true" /> {saveLabel}</span>
           <div className="compact-form-actions">
             <button className="reset-draft-button" type="button" onClick={resetDraft}>Очистить</button>
-            {generatedPdf && generatedActDocx && generatedReport && generatedReportDocx && <button className="share-act-button" type="button" onClick={sendEmail} disabled={isSendingEmail}>{isSendingEmail ? "Отправляем…" : "Отправить на почту"}</button>}
-            <button className="save-draft-button" type="submit" disabled={!reportIsComplete || isGenerating}>{isGenerating ? "Формируем 4 файла…" : reportIsComplete ? "Создать акт и отчёт" : `${totalCompleted}/${totalRequired} • фото ${completedRequiredPhotos}/${requiredPhotoSlots.length}`}</button>
+            <button className="save-draft-button" type="submit" disabled={!reportIsComplete || isGenerating}>{isGenerating ? "Создаём ZIP и отправляем…" : reportIsComplete ? "Создать акт и отчёт" : `${totalCompleted}/${totalRequired} • фото ${completedRequiredPhotos}/${requiredPhotoSlots.length}`}</button>
           </div>
         </div>
       </form>

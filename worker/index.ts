@@ -456,6 +456,8 @@ async function createOvenPhotoReportDocx(request: Request) {
 type EmailMetadata = {
   objectCode?: string;
   date?: string;
+  serviceType?: string;
+  pizzeriaAddress?: string;
   ovenModel?: string;
   ovenPosition?: string;
   technicianName?: string;
@@ -482,27 +484,35 @@ async function sendOvenReportEmail(request: Request, env: Env) {
     const clean = (value: unknown, fallback: string) => String(value || fallback).replace(/[\r\n]+/g, " ").trim().slice(0, 180);
     const objectCode = clean(metadata.objectCode, "без номера");
     const date = clean(metadata.date, "без даты");
+    const serviceType = clean(metadata.serviceType, "ТО печи");
+    const pizzeriaAddress = clean(metadata.pizzeriaAddress, "адрес не указан");
     const ovenModel = clean(metadata.ovenModel, "модель не указана");
     const ovenPosition = clean(metadata.ovenPosition, "положение не указано");
     const technicianName = clean(metadata.technicianName, "не указан");
-    const attachments = [act, actDocx, reportPdf, reportDocx];
-    const totalBytes = attachments.reduce((sum, file) => sum + file.size, 0);
+    const sourceFiles = [act, actDocx, reportPdf, reportDocx];
+    const totalBytes = sourceFiles.reduce((sum, file) => sum + file.size, 0);
     if (totalBytes > 22_000_000) return Response.json({ error: "Общий размер четырёх файлов превышает 22 МБ" }, { status: 413 });
-    if (attachments.some((file) => !isAllowedEmailAttachment(file))) {
+    if (sourceFiles.some((file) => !isAllowedEmailAttachment(file))) {
       return Response.json({ error: "К письму можно приложить только PDF и DOCX" }, { status: 400 });
     }
+    const archiveName = `ТО-печи-${objectCode}-${date}.zip`;
+    const archiveBytes = await createStoredZip(sourceFiles);
+    const archive = new File([archiveBytes], archiveName, { type: "application/zip" });
 
     const boundary = `riklab-${crypto.randomUUID()}`;
-    const subject = `ТО печи ${objectCode} — ${ovenModel} (${ovenPosition}), ${date}`;
+    const displayDate = formatRussianDate(date);
+    const subject = `${objectCode} — ${serviceType} — ${displayDate}`;
     const body = [
       "Документы по техническому обслуживанию печи сформированы на сайте РИК ЛАБ.",
       "",
       `Объект: ${objectCode}`,
-      `Дата: ${date}`,
+      `Адрес: ${pizzeriaAddress}`,
+      `Вид ТО: ${serviceType}`,
+      `Дата: ${displayDate}`,
       `Печь: ${ovenModel} (${ovenPosition})`,
       `Инженер: ${technicianName}`,
       "",
-      "Во вложении: акт PDF, редактируемый акт DOCX, фотоотчёт PDF и редактируемый фотоотчёт DOCX.",
+      "Во вложении ZIP-архив: акт PDF, редактируемый акт DOCX, фотоотчёт PDF и редактируемый фотоотчёт DOCX.",
     ].join("\r\n");
     const parts = [
       `From: ${formatMailbox(env.MAIL_FROM)}`,
@@ -520,20 +530,18 @@ async function sendOvenReportEmail(request: Request, env: Env) {
       wrapBase64(base64Utf8(body)),
     ];
 
-    for (const file of attachments) {
-      const fallbackName = safeAsciiFilename(file.name, file.type);
-      parts.push(
-        `--${boundary}`,
-        `Content-Type: ${file.type || "application/octet-stream"}; name="${fallbackName}"`,
-        "Content-Transfer-Encoding: base64",
-        `Content-Disposition: attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-        "",
-        wrapBase64(base64Bytes(new Uint8Array(await file.arrayBuffer()))),
-      );
-    }
+    const fallbackName = safeAsciiFilename(archive.name, archive.type);
+    parts.push(
+      `--${boundary}`,
+      `Content-Type: application/zip; name="${fallbackName}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archive.name)}`,
+      "",
+      wrapBase64(base64Bytes(archiveBytes)),
+    );
     parts.push(`--${boundary}--`, "");
     await smtpSend(env, parts.join("\r\n"));
-    return Response.json({ ok: true, recipient: env.MAIL_TO });
+    return new Response(archiveBytes, { headers: { "content-type": "application/zip", "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archive.name)}`, "cache-control": "no-store", "x-mail-recipient": env.MAIL_TO } });
   } catch (error) {
     console.error("SMTP send failed", error instanceof Error ? error.message : "Unknown error");
     return Response.json({ error: "Не удалось отправить письмо. Попробуйте ещё раз" }, { status: 502 });
@@ -544,6 +552,99 @@ function isAllowedEmailAttachment(file: File) {
   return file.type === "application/pdf" || file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 }
 
+function formatRussianDate(value: string) {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? `${match[3]}.${match[2]}.${match[1]}` : value;
+}
+
+async function createStoredZip(files: File[]) {
+  const encoder = new TextEncoder();
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  const now = new Date();
+  const dosTime = ((now.getHours() & 31) << 11) | ((now.getMinutes() & 63) << 5) | ((Math.floor(now.getSeconds() / 2)) & 31);
+  const dosDate = (((Math.max(1980, now.getFullYear()) - 1980) & 127) << 9) | (((now.getMonth() + 1) & 15) << 5) | (now.getDate() & 31);
+  let localOffset = 0;
+
+  for (const file of files) {
+    const name = encoder.encode(file.name.replace(/[\\/]/g, "-"));
+    const data = new Uint8Array(await file.arrayBuffer());
+    const crc = crc32(data);
+    const localHeader = new Uint8Array(30);
+    const local = new DataView(localHeader.buffer);
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0x0800, true);
+    local.setUint16(8, 0, true);
+    local.setUint16(10, dosTime, true);
+    local.setUint16(12, dosDate, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, data.length, true);
+    local.setUint32(22, data.length, true);
+    local.setUint16(26, name.length, true);
+    local.setUint16(28, 0, true);
+    localParts.push(localHeader, name, data);
+
+    const centralHeader = new Uint8Array(46);
+    const central = new DataView(centralHeader.buffer);
+    central.setUint32(0, 0x02014b50, true);
+    central.setUint16(4, 20, true);
+    central.setUint16(6, 20, true);
+    central.setUint16(8, 0x0800, true);
+    central.setUint16(10, 0, true);
+    central.setUint16(12, dosTime, true);
+    central.setUint16(14, dosDate, true);
+    central.setUint32(16, crc, true);
+    central.setUint32(20, data.length, true);
+    central.setUint32(24, data.length, true);
+    central.setUint16(28, name.length, true);
+    central.setUint16(30, 0, true);
+    central.setUint16(32, 0, true);
+    central.setUint16(34, 0, true);
+    central.setUint16(36, 0, true);
+    central.setUint32(38, 0, true);
+    central.setUint32(42, localOffset, true);
+    centralParts.push(centralHeader, name);
+    localOffset += localHeader.length + name.length + data.length;
+  }
+
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const endHeader = new Uint8Array(22);
+  const end = new DataView(endHeader.buffer);
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(4, 0, true);
+  end.setUint16(6, 0, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, centralSize, true);
+  end.setUint32(16, localOffset, true);
+  end.setUint16(20, 0, true);
+  return concatBytes([...localParts, ...centralParts, endHeader]);
+}
+
+function concatBytes(parts: Uint8Array[]) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) { output.set(part, offset); offset += part.length; }
+  return output;
+}
+
+let crcTable: Uint32Array | undefined;
+function crc32(bytes: Uint8Array) {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let index = 0; index < 256; index += 1) {
+      let value = index;
+      for (let bit = 0; bit < 8; bit += 1) value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+      crcTable[index] = value >>> 0;
+    }
+  }
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
 function formatMailbox(value: string) {
   const mailbox = value.replace(/[\r\n<>]/g, "").trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mailbox)) throw new Error("Invalid mailbox configuration");
@@ -551,7 +652,7 @@ function formatMailbox(value: string) {
 }
 
 function safeAsciiFilename(name: string, mimeType: string) {
-  const extension = mimeType === "application/pdf" ? ".pdf" : ".docx";
+  const extension = mimeType === "application/pdf" ? ".pdf" : mimeType === "application/zip" ? ".zip" : ".docx";
   const stem = name.replace(/\.[^.]+$/, "").normalize("NFKD").replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "riklab-report";
   return `${stem}${extension}`;
 }
