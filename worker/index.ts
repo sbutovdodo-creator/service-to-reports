@@ -63,8 +63,11 @@ const worker = {
     if (url.pathname === "/api/oven-report/docx" && request.method === "POST") {
       return createOvenPhotoReportDocx(request);
     }
-    if (url.pathname === "/api/oven-package" && request.method === "POST") {
-      return createOvenPackage(request, env);
+    if (url.pathname === "/api/oven-package/part" && request.method === "POST") {
+      return storeOvenPackagePart(request, env);
+    }
+    if (url.pathname === "/api/oven-package/finalize" && request.method === "POST") {
+      return finalizeOvenPackage(request, env);
     }
     if (url.pathname === "/api/oven-report/email" && request.method === "POST") {
       return sendOvenReportEmail(request, env);
@@ -456,71 +459,79 @@ async function createOvenPhotoReportDocx(request: Request) {
   }
 }
 
-class PackageGenerationError extends Error {}
+const PACKAGE_PARTS = {
+  "act-pdf": { key: "act.pdf", type: "application/pdf" },
+  "act-docx": { key: "act.docx", type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+  "report-pdf": { key: "report.pdf", type: "application/pdf" },
+  "report-docx": { key: "report.docx", type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+} as const;
 
-async function createOvenPackage(request: Request, env: Env) {
+function validPackageId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9-]{20,64}$/.test(value);
+}
+
+async function storeOvenPackagePart(request: Request, env: Env) {
   try {
-    const incoming = await request.formData();
-    const actPayload = incoming.get("actPayload");
-    const reportMetadata = incoming.get("metadata");
-    if (typeof actPayload !== "string" || typeof reportMetadata !== "string") {
-      return Response.json({ error: "Не переданы данные акта или фотоотчёта" }, { status: 400 });
-    }
-    const parsedReport = JSON.parse(reportMetadata) as ReportMetadata;
-    const baseName = `${parsedReport.act.objectCode}-${parsedReport.act.ovenPosition}-${parsedReport.act.date}`;
+    const body = await request.formData();
+    const packageId = body.get("packageId");
+    const kind = body.get("kind");
+    if (!validPackageId(packageId) || typeof kind !== "string" || !(kind in PACKAGE_PARTS)) return Response.json({ error: "Некорректный идентификатор комплекта" }, { status: 400 });
+    const part = PACKAGE_PARTS[kind as keyof typeof PACKAGE_PARTS];
     const endpoint = new URL(request.url);
-    const incomingPhotos = Array.from(incoming.entries()).filter((entry): entry is [string, File] => entry[0].startsWith("photo:") && entry[1] instanceof File);
-    const incomingBytes = incomingPhotos.reduce((sum, [, file]) => sum + file.size, 0);
-    if (incomingBytes > 60_000_000) return Response.json({ error: "Общий размер фотографий слишком большой" }, { status: 413 });
-    const optimizedPhotos = await Promise.all(incomingPhotos.map(async ([key, file]) => {
-      try {
-        const transformed = await env.IMAGES.input(file.stream()).transform({ width: 1400, fit: "scale-down" }).output({ format: "image/jpeg", quality: 75 });
-        const response = transformed.response();
-        if (!response.ok) return [key, file] as const;
-        return [key, new File([await response.blob()], `${key.slice(6)}.jpg`, { type: "image/jpeg" })] as const;
-      } catch {
-        return [key, file] as const;
-      }
-    }));
-    const makeActRequest = () => new Request(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: actPayload });
-    const makeReportRequest = () => {
-      const body = new FormData();
-      body.append("metadata", reportMetadata);
-      for (const [key, value] of optimizedPhotos) body.append(key, value, value.name);
-      return new Request(endpoint, { method: "POST", body });
-    };
-    const responseFile = async (response: Response, name: string, type: string) => {
-      if (!response.ok) {
-        const result = await response.json().catch(() => ({ error: "Не удалось сформировать документ" })) as { error?: string };
-        throw new PackageGenerationError(result.error || "Не удалось сформировать документ");
-      }
-      return new File([await response.blob()], name, { type });
-    };
-
-    const actPdf = await responseFile(await createOvenActPdf(makeActRequest(), env), `Акт-ТО-печи-${baseName}.pdf`, "application/pdf");
-    const actDocx = await responseFile(await createOvenActDocx(makeActRequest(), env), `Акт-ТО-печи-${baseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-    const reportPdf = await responseFile(await createOvenPhotoReport(makeReportRequest(), env), `Фотоотчёт-ТО-печи-${baseName}.pdf`, "application/pdf");
-    const reportDocx = await responseFile(await createOvenPhotoReportDocx(makeReportRequest()), `Фотоотчёт-ТО-печи-${baseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-
-    const delivery = new FormData();
-    delivery.append("metadata", JSON.stringify({
-      objectCode: parsedReport.act.objectCode,
-      date: parsedReport.act.date,
-      serviceType: "ТО печи",
-      pizzeriaAddress: parsedReport.act.pizzeriaAddress,
-      ovenModel: parsedReport.act.ovenModel,
-      ovenPosition: parsedReport.act.ovenPosition,
-      technicianName: parsedReport.act.technicianName,
-    }));
-    delivery.append("act", actPdf, actPdf.name);
-    delivery.append("actDocx", actDocx, actDocx.name);
-    delivery.append("reportPdf", reportPdf, reportPdf.name);
-    delivery.append("reportDocx", reportDocx, reportDocx.name);
-    return sendOvenReportEmail(new Request(endpoint, { method: "POST", body: delivery }), env);
+    let generated: Response;
+    let baseName: string;
+    if (kind.startsWith("act-")) {
+      const actPayload = body.get("actPayload");
+      if (typeof actPayload !== "string") return Response.json({ error: "Не переданы данные акта" }, { status: 400 });
+      const parsed = JSON.parse(actPayload) as PdfPayload;
+      baseName = `${parsed.act.objectCode}-${parsed.act.ovenPosition}-${parsed.act.date}`;
+      const actRequest = new Request(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: actPayload });
+      generated = kind === "act-pdf" ? await createOvenActPdf(actRequest, env) : await createOvenActDocx(actRequest, env);
+    } else {
+      const metadata = body.get("metadata");
+      if (typeof metadata !== "string") return Response.json({ error: "Не переданы данные фотоотчёта" }, { status: 400 });
+      const parsed = JSON.parse(metadata) as ReportMetadata;
+      baseName = `${parsed.act.objectCode}-${parsed.act.ovenPosition}-${parsed.act.date}`;
+      const reportRequest = new Request(endpoint, { method: "POST", body });
+      generated = kind === "report-pdf" ? await createOvenPhotoReport(reportRequest, env) : await createOvenPhotoReportDocx(reportRequest);
+    }
+    if (!generated.ok) return generated;
+    const extension = kind.endsWith("pdf") ? "pdf" : "docx";
+    const label = kind.startsWith("act-") ? "Акт-ТО-печи" : "Фотоотчёт-ТО-печи";
+    const filename = `${label}-${baseName}.${extension}`;
+    const blob = await generated.blob();
+    await env.PRIVATE_FILES.put(`oven-packages/${packageId}/${part.key}`, blob, { customMetadata: { filename, type: part.type } });
+    return Response.json({ ok: true, size: blob.size });
   } catch (error) {
-    console.error("Oven package generation failed", error instanceof Error ? error.message : "Unknown error");
-    if (error instanceof PackageGenerationError) return Response.json({ error: error.message }, { status: 400 });
-    return Response.json({ error: "Не удалось создать и отправить комплект документов" }, { status: 500 });
+    console.error("Failed to store oven package part", error instanceof Error ? error.message : "Unknown error");
+    return Response.json({ error: "Не удалось сохранить часть комплекта" }, { status: 500 });
+  }
+}
+
+async function finalizeOvenPackage(request: Request, env: Env) {
+  try {
+    const input = await request.json() as { packageId?: string; metadata?: EmailMetadata };
+    if (!validPackageId(input.packageId) || !input.metadata) return Response.json({ error: "Некорректные данные комплекта" }, { status: 400 });
+    const delivery = new FormData();
+    delivery.append("metadata", JSON.stringify(input.metadata));
+    const fields = ["act", "actDocx", "reportPdf", "reportDocx"] as const;
+    const parts = Object.values(PACKAGE_PARTS);
+    const keys: string[] = [];
+    for (let index = 0; index < parts.length; index += 1) {
+      const key = `oven-packages/${input.packageId}/${parts[index].key}`;
+      keys.push(key);
+      const object = await env.PRIVATE_FILES.get(key);
+      if (!object) return Response.json({ error: "Комплект сформирован не полностью. Нажмите кнопку ещё раз" }, { status: 409 });
+      const filename = object.customMetadata?.filename || parts[index].key;
+      const type = object.customMetadata?.type || parts[index].type;
+      delivery.append(fields[index], new File([await object.arrayBuffer()], filename, { type }), filename);
+    }
+    const response = await sendOvenReportEmail(new Request(new URL(request.url), { method: "POST", body: delivery }), env);
+    if (response.ok) await Promise.all(keys.map((key) => env.PRIVATE_FILES.delete(key)));
+    return response;
+  } catch (error) {
+    console.error("Failed to finalize oven package", error instanceof Error ? error.message : "Unknown error");
+    return Response.json({ error: "Не удалось упаковать и отправить документы" }, { status: 500 });
   }
 }
 
@@ -562,7 +573,7 @@ async function sendOvenReportEmail(request: Request, env: Env) {
     const technicianName = clean(metadata.technicianName, "не указан");
     const sourceFiles = [act, actDocx, reportPdf, reportDocx];
     const totalBytes = sourceFiles.reduce((sum, file) => sum + file.size, 0);
-    if (totalBytes > 22_000_000) return Response.json({ error: "Общий размер четырёх файлов превышает 22 МБ" }, { status: 413 });
+    if (totalBytes > 34_000_000) return Response.json({ error: "Общий размер четырёх файлов превышает 34 МБ" }, { status: 413 });
     if (sourceFiles.some((file) => !isAllowedEmailAttachment(file))) {
       return Response.json({ error: "К письму можно приложить только PDF и DOCX" }, { status: 400 });
     }

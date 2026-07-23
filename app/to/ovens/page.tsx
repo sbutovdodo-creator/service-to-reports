@@ -247,10 +247,31 @@ export default function OvenMaintenancePage() {
     setPdfError("");
     try {
       const actPayload = JSON.stringify({ act: form, checklist: ovenChecklist.map((item) => ({ ...item, ...checklist[item.id] })), entries: actEntries });
-      const packageBody = createReportBody();
-      packageBody.append("actPayload", actPayload);
-      setSaveLabel("Передаём фото один раз. Сервер создаёт ZIP и письмо…");
-      const deliveryResponse = await fetch("/api/oven-package", { method: "POST", body: packageBody });
+      const packageId = crypto.randomUUID();
+      const storePart = async (kind: "act-pdf" | "act-docx" | "report-pdf" | "report-docx", body: FormData) => {
+        body.append("packageId", packageId);
+        body.append("kind", kind);
+        const response = await fetch("/api/oven-package/part", { method: "POST", body });
+        if (!response.ok) {
+          const result = await response.json().catch(() => ({ error: "Не удалось сформировать документ" }));
+          throw new Error(result.error || "Не удалось сформировать документ");
+        }
+      };
+      const createActBody = () => { const body = new FormData(); body.append("actPayload", actPayload); return body; };
+      setSaveLabel("Формируем акт PDF — 1 из 4");
+      await storePart("act-pdf", createActBody());
+      setSaveLabel("Формируем акт DOCX — 2 из 4");
+      await storePart("act-docx", createActBody());
+      setSaveLabel("Формируем фотоотчёт PDF — 3 из 4");
+      await storePart("report-pdf", createReportBody());
+      setSaveLabel("Формируем фотоотчёт DOCX — 4 из 4");
+      await storePart("report-docx", createReportBody());
+      setSaveLabel("Упаковываем ZIP и отправляем письмо…");
+      const deliveryResponse = await fetch("/api/oven-package/finalize", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ packageId, metadata: { objectCode: form.objectCode, date: form.date, serviceType: "ТО печи", pizzeriaAddress: form.pizzeriaAddress, ovenModel: form.ovenModel, ovenPosition: form.ovenPosition, technicianName: form.technicianName } }),
+      });
       if (!deliveryResponse.ok) {
         const result = await deliveryResponse.json().catch(() => ({ error: "Не удалось отправить архив" }));
         throw new Error(result.error || "Не удалось отправить архив");
