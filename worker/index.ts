@@ -243,7 +243,6 @@ async function createOvenActDocx(request: Request, env: Env) {
       completedWorks: normalizeEntries(payload.entries?.completedWorks),
     };
     const children: Array<Paragraph | Table> = [
-      docxBrandParagraph(logoBytes),
       new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [new TextRun({ text: "АКТ ВЫПОЛНЕННЫХ РАБОТ", bold: true, color: "102936", size: 30, font: "Arial" })] }),
       new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 260 }, children: [new TextRun({ text: "Техническое обслуживание печи", size: 22, color: "355967", font: "Arial" })] }),
       metadataTable,
@@ -264,7 +263,7 @@ async function createOvenActDocx(request: Request, env: Env) {
       styles: { default: { document: { run: { font: "Arial", size: 20, color: "102936", language: { value: "ru-RU" } }, paragraph: { spacing: { after: 100, line: 252 } } } } },
       sections: [{
         properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 900, right: 1080, bottom: 900, left: 1080, header: 450, footer: 450 } } },
-        headers: { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: `Акт ТО печи • ${payload.act.objectCode}`, size: 15, color: "688692", font: "Arial" })] })] }) },
+        headers: { default: new Header({ children: [docxHeaderBrand(logoBytes, `Акт ТО печи • ${payload.act.objectCode}`)] }) },
         footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "ООО «РИК ЛАБ» • редактируемый документ", size: 15, color: "688692", font: "Arial" })] })] }) },
         children,
       }],
@@ -426,7 +425,6 @@ async function createOvenPhotoReportDocx(request: Request, env: Env) {
       ["Заказчик", metadata.act.customer || "Не указан"],
     ];
     const children: Array<Paragraph | Table> = [
-      docxBrandParagraph(logoBytes),
       new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "ФОТООТЧЁТ", bold: true, color: "087A9F", size: 20, font: "Arial" })] }),
       new Paragraph({ spacing: { after: 300 }, children: [new TextRun({ text: "Техническое обслуживание печи", bold: true, color: "102936", size: 40, font: "Arial" })] }),
       new Table({
@@ -460,7 +458,7 @@ async function createOvenPhotoReportDocx(request: Request, env: Env) {
       styles: { default: { document: { run: { font: "Arial", size: 22, color: "102936", language: { value: "ru-RU" } }, paragraph: { spacing: { after: 120, line: 276 } } } } },
       sections: [{
         properties: { page: { size: { width: 12240, height: 15840 }, margin: { top: 1080, right: 1080, bottom: 1080, left: 1080, header: 500, footer: 500 } } },
-        headers: { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: `РИК ЛАБ • ТО печи ${metadata.act.objectCode}`, size: 16, color: "688692", font: "Arial" })] })] }) },
+        headers: { default: new Header({ children: [docxHeaderBrand(logoBytes, `ТО печи ${metadata.act.objectCode}`)] }) },
         footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "Редактируемый фотоотчёт", size: 16, color: "688692", font: "Arial" })] })] }) },
         children,
       }],
@@ -1170,13 +1168,13 @@ function drawPdfBrand(page: ReturnType<PDFDocument["getPages"]>[number], logo: P
   page.drawText("СЕРВИС ТЕХНИЧЕСКОГО ОБСЛУЖИВАНИЯ", { x: x + size + 8, y: y + 5, size: 4.6, font, color: rgb(0.3, 0.4, 0.46) });
 }
 
-function docxBrandParagraph(logoBytes: Uint8Array) {
+function docxHeaderBrand(logoBytes: Uint8Array, suffix: string) {
   return new Paragraph({
-    spacing: { after: 160 },
+    spacing: { after: 0 },
     children: [
-      new ImageRun({ type: "png", data: logoBytes, transformation: { width: 34, height: 34 } }),
-      new TextRun({ text: "   РИК ЛАБ", bold: true, color: "08243F", size: 24, font: "Arial" }),
-      new TextRun({ text: "   Сервис технического обслуживания", color: "688692", size: 15, font: "Arial" }),
+      new ImageRun({ type: "png", data: logoBytes, transformation: { width: 22, height: 22 } }),
+      new TextRun({ text: "   РИК ЛАБ", bold: true, color: "08243F", size: 18, font: "Arial" }),
+      new TextRun({ text: `   ${suffix}`, color: "688692", size: 14, font: "Arial" }),
     ],
   });
 }
