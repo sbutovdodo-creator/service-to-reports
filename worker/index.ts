@@ -514,11 +514,9 @@ async function finalizeOvenPackage(request: Request, env: Env) {
     const input = await request.json() as { packageId?: string; metadata?: EmailMetadata };
     if (!validPackageId(input.packageId) || !input.metadata) return Response.json({ error: "Некорректные данные комплекта" }, { status: 400 });
     const parts = Object.values(PACKAGE_PARTS);
-    const keys: string[] = [];
     const entries: StoredZipEntry[] = [];
     for (const part of parts) {
       const key = `oven-packages/${input.packageId}/${part.key}`;
-      keys.push(key);
       const object = await env.PRIVATE_FILES.head(key);
       if (!object) return Response.json({ error: "Комплект сформирован не полностью. Нажмите кнопку ещё раз" }, { status: 409 });
       entries.push({ key, filename: object.customMetadata?.filename || part.key, size: Number(object.customMetadata?.size || object.size), crc: Number.parseInt(object.customMetadata?.crc32 || "0", 16) >>> 0 });
@@ -526,16 +524,10 @@ async function finalizeOvenPackage(request: Request, env: Env) {
     const objectCode = String(input.metadata.objectCode || "отчёт").replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
     const date = String(input.metadata.date || "без-даты");
     const archiveName = `ТО-печи-${objectCode}-${date}.zip`;
-    const archiveKey = `oven-packages/${input.packageId}/archive.zip`;
-    await env.PRIVATE_FILES.put(archiveKey, createStoredZipStream(env, entries), { customMetadata: { filename: archiveName, type: "application/zip" } });
-    const archiveForMail = await env.PRIVATE_FILES.get(archiveKey);
-    if (!archiveForMail) throw new Error("Archive was not stored");
-    await sendArchiveEmail(input.metadata, archiveForMail, archiveName, env);
-    await Promise.all(keys.map((key) => env.PRIVATE_FILES.delete(key)));
-    const archiveForDownload = await env.PRIVATE_FILES.get(archiveKey);
-    if (!archiveForDownload) throw new Error("Archive is unavailable");
+    const archiveSize = storedZipSize(entries);
+    await sendArchiveEmail(input.metadata, createStoredZipStream(env, entries), archiveName, env);
     const fallbackName = safeAsciiFilename(archiveName, "application/zip");
-    return new Response(archiveForDownload.body, { headers: { "content-type": "application/zip", "content-length": String(archiveForDownload.size), "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archiveName)}`, "cache-control": "no-store", "x-mail-recipient": env.MAIL_TO || "" } });
+    return new Response(createStoredZipStream(env, entries), { headers: { "content-type": "application/zip", "content-length": String(archiveSize), "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archiveName)}`, "cache-control": "no-store", "x-mail-recipient": env.MAIL_TO || "" } });
   } catch (error) {
     console.error("Failed to finalize oven package", error instanceof Error ? error.message : "Unknown error");
     return Response.json({ error: "Не удалось упаковать и отправить документы" }, { status: 500 });
@@ -814,6 +806,14 @@ function createStoredZipStream(env: Env, entries: StoredZipEntry[]) {
   });
 }
 
+function storedZipSize(entries: StoredZipEntry[]) {
+  const encoder = new TextEncoder();
+  return entries.reduce((total, entry) => {
+    const nameLength = encoder.encode(entry.filename.replace(/[\\/]/g, "-")).length;
+    return total + 30 + nameLength + entry.size + 46 + nameLength;
+  }, 22);
+}
+
 function concatBytes(parts: Uint8Array[]) {
   const total = parts.reduce((sum, part) => sum + part.length, 0);
   const output = new Uint8Array(total);
@@ -883,7 +883,7 @@ function wrapBase64(value: string) {
   return value.match(/.{1,76}/g)?.join("\r\n") || "";
 }
 
-async function sendArchiveEmail(metadata: EmailMetadata, archive: R2ObjectBody, archiveName: string, env: Env) {
+async function sendArchiveEmail(metadata: EmailMetadata, archive: ReadableStream<Uint8Array>, archiveName: string, env: Env) {
   if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASSWORD || !env.MAIL_FROM || !env.MAIL_TO) throw new Error("Mail is not configured");
   const clean = (value: unknown, fallback: string) => String(value || fallback).replace(/[\r\n]+/g, " ").trim().slice(0, 180);
   const objectCode = clean(metadata.objectCode, "без номера");
@@ -931,7 +931,7 @@ async function sendArchiveEmail(metadata: EmailMetadata, archive: R2ObjectBody, 
       `Content-Disposition: attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archiveName)}`,
       "",
     ].join("\r\n"));
-    await writeBase64Stream(archive.body, write);
+    await writeBase64Stream(archive, write);
     await write(`\r\n--${boundary}--\r\n`);
   });
 }
