@@ -63,6 +63,9 @@ const worker = {
     if (url.pathname === "/api/oven-report/docx" && request.method === "POST") {
       return createOvenPhotoReportDocx(request);
     }
+    if (url.pathname === "/api/oven-package" && request.method === "POST") {
+      return createOvenPackage(request, env);
+    }
     if (url.pathname === "/api/oven-report/email" && request.method === "POST") {
       return sendOvenReportEmail(request, env);
     }
@@ -450,6 +453,74 @@ async function createOvenPhotoReportDocx(request: Request) {
   } catch (error) {
     console.error("Failed to generate oven photo report DOCX", error);
     return Response.json({ error: "Не удалось сформировать редактируемый отчёт" }, { status: 500 });
+  }
+}
+
+class PackageGenerationError extends Error {}
+
+async function createOvenPackage(request: Request, env: Env) {
+  try {
+    const incoming = await request.formData();
+    const actPayload = incoming.get("actPayload");
+    const reportMetadata = incoming.get("metadata");
+    if (typeof actPayload !== "string" || typeof reportMetadata !== "string") {
+      return Response.json({ error: "Не переданы данные акта или фотоотчёта" }, { status: 400 });
+    }
+    const parsedReport = JSON.parse(reportMetadata) as ReportMetadata;
+    const baseName = `${parsedReport.act.objectCode}-${parsedReport.act.ovenPosition}-${parsedReport.act.date}`;
+    const endpoint = new URL(request.url);
+    const incomingPhotos = Array.from(incoming.entries()).filter((entry): entry is [string, File] => entry[0].startsWith("photo:") && entry[1] instanceof File);
+    const incomingBytes = incomingPhotos.reduce((sum, [, file]) => sum + file.size, 0);
+    if (incomingBytes > 60_000_000) return Response.json({ error: "Общий размер фотографий слишком большой" }, { status: 413 });
+    const optimizedPhotos = await Promise.all(incomingPhotos.map(async ([key, file]) => {
+      try {
+        const transformed = await env.IMAGES.input(file.stream()).transform({ width: 1400, fit: "scale-down" }).output({ format: "image/jpeg", quality: 75 });
+        const response = transformed.response();
+        if (!response.ok) return [key, file] as const;
+        return [key, new File([await response.blob()], `${key.slice(6)}.jpg`, { type: "image/jpeg" })] as const;
+      } catch {
+        return [key, file] as const;
+      }
+    }));
+    const makeActRequest = () => new Request(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: actPayload });
+    const makeReportRequest = () => {
+      const body = new FormData();
+      body.append("metadata", reportMetadata);
+      for (const [key, value] of optimizedPhotos) body.append(key, value, value.name);
+      return new Request(endpoint, { method: "POST", body });
+    };
+    const responseFile = async (response: Response, name: string, type: string) => {
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({ error: "Не удалось сформировать документ" })) as { error?: string };
+        throw new PackageGenerationError(result.error || "Не удалось сформировать документ");
+      }
+      return new File([await response.blob()], name, { type });
+    };
+
+    const actPdf = await responseFile(await createOvenActPdf(makeActRequest(), env), `Акт-ТО-печи-${baseName}.pdf`, "application/pdf");
+    const actDocx = await responseFile(await createOvenActDocx(makeActRequest(), env), `Акт-ТО-печи-${baseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    const reportPdf = await responseFile(await createOvenPhotoReport(makeReportRequest(), env), `Фотоотчёт-ТО-печи-${baseName}.pdf`, "application/pdf");
+    const reportDocx = await responseFile(await createOvenPhotoReportDocx(makeReportRequest()), `Фотоотчёт-ТО-печи-${baseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+
+    const delivery = new FormData();
+    delivery.append("metadata", JSON.stringify({
+      objectCode: parsedReport.act.objectCode,
+      date: parsedReport.act.date,
+      serviceType: "ТО печи",
+      pizzeriaAddress: parsedReport.act.pizzeriaAddress,
+      ovenModel: parsedReport.act.ovenModel,
+      ovenPosition: parsedReport.act.ovenPosition,
+      technicianName: parsedReport.act.technicianName,
+    }));
+    delivery.append("act", actPdf, actPdf.name);
+    delivery.append("actDocx", actDocx, actDocx.name);
+    delivery.append("reportPdf", reportPdf, reportPdf.name);
+    delivery.append("reportDocx", reportDocx, reportDocx.name);
+    return sendOvenReportEmail(new Request(endpoint, { method: "POST", body: delivery }), env);
+  } catch (error) {
+    console.error("Oven package generation failed", error instanceof Error ? error.message : "Unknown error");
+    if (error instanceof PackageGenerationError) return Response.json({ error: error.message }, { status: 400 });
+    return Response.json({ error: "Не удалось создать и отправить комплект документов" }, { status: 500 });
   }
 }
 

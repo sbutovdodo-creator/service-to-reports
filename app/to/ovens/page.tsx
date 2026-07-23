@@ -247,31 +247,10 @@ export default function OvenMaintenancePage() {
     setPdfError("");
     try {
       const actPayload = JSON.stringify({ act: form, checklist: ovenChecklist.map((item) => ({ ...item, ...checklist[item.id] })), entries: actEntries });
-      const fetchFile = async (url: string, body: BodyInit, fileName: string, type: string) => {
-        const response = await fetch(url, { method: "POST", headers: typeof body === "string" ? { "content-type": "application/json" } : undefined, body });
-        if (!response.ok) {
-          const result = await response.json().catch(() => ({ error: "Не удалось сформировать документ" }));
-          throw new Error(result.error || "Не удалось сформировать документ");
-        }
-        return new File([await response.blob()], fileName, { type });
-      };
-      const baseName = `${form.objectCode}-${form.ovenPosition}-${form.date}`;
-      setSaveLabel("Формируем акт PDF — 1 из 4");
-      const actPdf = await fetchFile("/api/oven-act/pdf", actPayload, `Акт-ТО-печи-${baseName}.pdf`, "application/pdf");
-      setSaveLabel("Формируем акт DOCX — 2 из 4");
-      const actDocx = await fetchFile("/api/oven-act/docx", actPayload, `Акт-ТО-печи-${baseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-      setSaveLabel("Формируем фотоотчёт PDF — 3 из 4");
-      const reportPdf = await fetchFile("/api/oven-report/pdf", createReportBody(), `Фотоотчёт-ТО-печи-${baseName}.pdf`, "application/pdf");
-      setSaveLabel("Формируем фотоотчёт DOCX — 4 из 4");
-      const reportDocx = await fetchFile("/api/oven-report/docx", createReportBody(), `Фотоотчёт-ТО-печи-${baseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-      setSaveLabel("Упаковываем ZIP и отправляем на почту…");
-      const deliveryBody = new FormData();
-      deliveryBody.append("metadata", JSON.stringify({ objectCode: form.objectCode, date: form.date, serviceType: "ТО печи", pizzeriaAddress: form.pizzeriaAddress, ovenModel: form.ovenModel, ovenPosition: form.ovenPosition, technicianName: form.technicianName }));
-      deliveryBody.append("act", actPdf, actPdf.name);
-      deliveryBody.append("actDocx", actDocx, actDocx.name);
-      deliveryBody.append("reportPdf", reportPdf, reportPdf.name);
-      deliveryBody.append("reportDocx", reportDocx, reportDocx.name);
-      const deliveryResponse = await fetch("/api/oven-report/email", { method: "POST", body: deliveryBody });
+      const packageBody = createReportBody();
+      packageBody.append("actPayload", actPayload);
+      setSaveLabel("Передаём фото один раз. Сервер создаёт ZIP и письмо…");
+      const deliveryResponse = await fetch("/api/oven-package", { method: "POST", body: packageBody });
       if (!deliveryResponse.ok) {
         const result = await deliveryResponse.json().catch(() => ({ error: "Не удалось отправить архив" }));
         throw new Error(result.error || "Не удалось отправить архив");
@@ -285,7 +264,8 @@ export default function OvenMaintenancePage() {
       window.setTimeout(() => URL.revokeObjectURL(link.href), 5_000);
       setSaveLabel("ZIP скачан и отправлен на info@riklab.ru");
     } catch (error) {
-      setPdfError(error instanceof Error ? error.message : "Не удалось сформировать документы");
+      const message = error instanceof Error ? error.message : "Не удалось сформировать документы";
+      setPdfError(message === "Load failed" || message === "Failed to fetch" ? "Связь прервалась. Черновик сохранён — нажмите кнопку ещё раз при устойчивом интернете." : message);
     } finally {
       setIsGenerating(false);
     }
