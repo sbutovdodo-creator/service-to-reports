@@ -4,7 +4,7 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { ovenChecklist } from "./checklist";
 import { siteGroups, siteObjects } from "./objects";
 import { allPhotoSlots, photoRequirements, requiredPhotoSlots } from "./photos";
-import { clearStoredPhotos, compressPhoto, loadStoredPhotos, removeStoredPhoto, saveStoredPhoto, StoredPhoto } from "./photo-storage";
+import { clearStoredPhotos, compressPhoto, loadStoredPhotos, optimizeStoredPhoto, removeStoredPhoto, saveStoredPhoto, StoredPhoto } from "./photo-storage";
 
 type Theme = "light" | "dark";
 type ActData = {
@@ -169,8 +169,8 @@ export default function OvenMaintenancePage() {
     setPhotoError("");
     try {
       const blob = await compressPhoto(file);
-      await saveStoredPhoto(key, blob);
-      setPhotos((current) => ({ ...current, [key]: { key, blob, updatedAt: Date.now() } }));
+      const photo = await saveStoredPhoto(key, blob);
+      setPhotos((current) => ({ ...current, [key]: photo }));
       setGeneratedReport(null);
       setGeneratedReportDocx(null);
     } catch {
@@ -200,8 +200,9 @@ export default function OvenMaintenancePage() {
       setPhotoError("");
       try {
         const blob = await compressPhoto(file);
-        await saveStoredPhoto(key, blob);
-        setPhotos((current) => ({ ...current, [key]: { key, blob, updatedAt: Date.now() + index } }));
+        const photo = await saveStoredPhoto(key, blob);
+        const orderedPhoto = { ...photo, updatedAt: photo.updatedAt + index };
+        setPhotos((current) => ({ ...current, [key]: orderedPhoto }));
         setGeneratedReport(null);
         setGeneratedReportDocx(null);
       } catch {
@@ -246,6 +247,14 @@ export default function OvenMaintenancePage() {
     setIsGenerating(true);
     setPdfError("");
     try {
+      const reportPhotos: Record<string, StoredPhoto> = {};
+      const photoValues = Object.values(photos);
+      for (const [index, photo] of photoValues.entries()) {
+        setSaveLabel(`Оптимизируем фото — ${index + 1} из ${photoValues.length}`);
+        const optimized = await optimizeStoredPhoto(photo);
+        reportPhotos[optimized.key] = optimized;
+      }
+      setPhotos(reportPhotos);
       const actPayload = JSON.stringify({ act: form, checklist: ovenChecklist.map((item) => ({ ...item, ...checklist[item.id] })), entries: actEntries });
       const packageId = crypto.randomUUID();
       const storePart = async (kind: "act-pdf" | "act-docx" | "report-pdf" | "report-docx", body: FormData) => {
@@ -263,9 +272,9 @@ export default function OvenMaintenancePage() {
       setSaveLabel("Формируем акт DOCX — 2 из 4");
       await storePart("act-docx", createActBody());
       setSaveLabel("Формируем фотоотчёт PDF — 3 из 4");
-      await storePart("report-pdf", createReportBody());
+      await storePart("report-pdf", createReportBody(reportPhotos));
       setSaveLabel("Формируем фотоотчёт DOCX — 4 из 4");
-      await storePart("report-docx", createReportBody());
+      await storePart("report-docx", createReportBody(reportPhotos));
       setSaveLabel("Упаковываем ZIP и отправляем письмо…");
       const deliveryResponse = await fetch("/api/oven-package/finalize", {
         method: "POST",
@@ -292,13 +301,14 @@ export default function OvenMaintenancePage() {
     }
   }
 
-  function createReportBody() {
-    const regularItems = allPhotoSlots.filter((slot) => photos[slot.key]).map((slot) => ({ key: slot.key, title: `${slot.requirementTitle} — ${slot.label}`, required: slot.required }));
-    const extraItems = extraPhotos.map((photo, index) => ({ key: photo.key, title: `Дополнительные работы — фото ${index + 1}`, required: false }));
+  function createReportBody(sourcePhotos: Record<string, StoredPhoto>) {
+    const regularItems = allPhotoSlots.filter((slot) => sourcePhotos[slot.key]).map((slot) => ({ key: slot.key, title: `${slot.requirementTitle} — ${slot.label}`, required: slot.required }));
+    const optimizedExtraPhotos = Object.values(sourcePhotos).filter((photo) => photo.key.startsWith(EXTRA_PHOTO_PREFIX)).sort((left, right) => left.updatedAt - right.updatedAt);
+    const extraItems = optimizedExtraPhotos.map((photo, index) => ({ key: photo.key, title: `Дополнительные работы — фото ${index + 1}`, required: false }));
     const photoItems = [...regularItems, ...extraItems];
     const body = new FormData();
     body.append("metadata", JSON.stringify({ act: form, entries: actEntries, photos: photoItems }));
-    photoItems.forEach((item) => body.append(`photo:${item.key}`, photos[item.key].blob, `${item.key}.jpg`));
+    photoItems.forEach((item) => body.append(`photo:${item.key}`, sourcePhotos[item.key].blob, `${item.key}.jpg`));
     return body;
   }
 

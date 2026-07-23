@@ -2,10 +2,12 @@ export type StoredPhoto = {
   key: string;
   blob: Blob;
   updatedAt: number;
+  compressionVersion?: number;
 };
 
 const DATABASE_NAME = "oven-maintenance-photos";
 const STORE_NAME = "photos";
+const COMPRESSION_VERSION = 1;
 
 function openDatabase() {
   return new Promise<IDBDatabase>((resolve, reject) => {
@@ -35,7 +37,9 @@ export async function loadStoredPhotos() {
 }
 
 export async function saveStoredPhoto(key: string, blob: Blob) {
-  await transaction<IDBValidKey>("readwrite", (store) => store.put({ key, blob, updatedAt: Date.now() } satisfies StoredPhoto));
+  const photo = { key, blob, updatedAt: Date.now(), compressionVersion: COMPRESSION_VERSION } satisfies StoredPhoto;
+  await transaction<IDBValidKey>("readwrite", (store) => store.put(photo));
+  return photo;
 }
 
 export async function removeStoredPhoto(key: string) {
@@ -46,7 +50,7 @@ export async function clearStoredPhotos() {
   await transaction<undefined>("readwrite", (store) => store.clear());
 }
 
-async function loadPhotoSource(file: File): Promise<{ source: CanvasImageSource; width: number; height: number; close?: () => void }> {
+async function loadPhotoSource(file: Blob): Promise<{ source: CanvasImageSource; width: number; height: number; close?: () => void }> {
   if (typeof createImageBitmap === "function") {
     try {
       const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
@@ -66,9 +70,9 @@ async function loadPhotoSource(file: File): Promise<{ source: CanvasImageSource;
   }
 }
 
-export async function compressPhoto(file: File) {
+export async function compressPhoto(file: Blob) {
   const decoded = await loadPhotoSource(file);
-  const maxSide = 1600;
+  const maxSide = 1280;
   const scale = Math.min(1, maxSide / Math.max(decoded.width, decoded.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(decoded.width * scale));
@@ -77,5 +81,13 @@ export async function compressPhoto(file: File) {
   if (!context) throw new Error("Не удалось обработать фотографию");
   context.drawImage(decoded.source, 0, 0, canvas.width, canvas.height);
   decoded.close?.();
-  return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Не удалось сжать фотографию")), "image/jpeg", 0.82));
+  return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Не удалось сжать фотографию")), "image/jpeg", 0.70));
+}
+
+export async function optimizeStoredPhoto(photo: StoredPhoto) {
+  if (photo.compressionVersion === COMPRESSION_VERSION) return photo;
+  const blob = await compressPhoto(photo.blob);
+  const optimized = { ...photo, blob, compressionVersion: COMPRESSION_VERSION };
+  await transaction<IDBValidKey>("readwrite", (store) => store.put(optimized));
+  return optimized;
 }
