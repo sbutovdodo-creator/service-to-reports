@@ -61,7 +61,7 @@ const worker = {
       return createOvenPhotoReport(request, env);
     }
     if (url.pathname === "/api/oven-report/docx" && request.method === "POST") {
-      return createOvenPhotoReportDocx(request);
+      return createOvenPhotoReportDocx(request, env);
     }
     if (url.pathname === "/api/oven-package/part" && request.method === "POST") {
       return storeOvenPackagePart(request, env);
@@ -130,20 +130,23 @@ async function createOvenActPdf(request: Request, env: Env) {
     const fetchAsset = (path: string) => env.ASSETS
       ? env.ASSETS.fetch(new Request(new URL(path, request.url)))
       : fetch(new Request(new URL(path, request.url)));
-    const [templateResponse, fontResponse, stampObject] = await Promise.all([
+    const [templateResponse, fontResponse, logoResponse, stampObject] = await Promise.all([
       fetchAsset("/oven-act-template.pdf"),
       fetchAsset("/fonts/DejaVuSans.ttf"),
+      fetchAsset("/rik-logo.png"),
       env.PRIVATE_FILES.get("director-stamp-signature.png"),
     ]);
-    if (!templateResponse.ok || !fontResponse.ok) return Response.json({ error: "Шаблон акта недоступен" }, { status: 500 });
+    if (!templateResponse.ok || !fontResponse.ok || !logoResponse.ok) return Response.json({ error: "Шаблон акта недоступен" }, { status: 500 });
     if (!stampObject) return Response.json({ error: "Печать и подпись ещё не настроены" }, { status: 503 });
 
     const pdf = await PDFDocument.load(await templateResponse.arrayBuffer());
     pdf.registerFontkit(fontkit);
     const font = await pdf.embedFont(await fontResponse.arrayBuffer(), { subset: true });
+    const logo = await pdf.embedPng(await logoResponse.arrayBuffer());
     const stamp = await pdf.embedPng(await stampObject.arrayBuffer());
     const page = pdf.getPages()[0];
     const { height } = page.getSize();
+    drawPdfBrand(page, logo, font, 50, height - 39, 31);
     const text = (value: string, x: number, top: number, size = 6.2) => page.drawText(value || "—", { x, y: height - top - size, size, font, color: rgb(0.04, 0.08, 0.1), maxWidth: 382 });
 
     const [year, month, day] = payload.act.date.split("-");
@@ -165,12 +168,11 @@ async function createOvenActPdf(request: Request, env: Env) {
       { values: entries.recommendations, tops: [564, 576, 588] },
       { values: entries.completedWorks, tops: [613, 625, 637] },
     ];
-    let needsEntriesAppendix = false;
     for (const group of actRows) {
-      if (group.values.length > 3) needsEntriesAppendix = true;
-      group.values.slice(0, 3).forEach((value, index) => {
-        if (font.widthOfTextAtSize(value, 5.6) > 410) needsEntriesAppendix = true;
-        page.drawText(fitTextToWidth(value, font, 5.6, 410), { x: 160, y: height - group.tops[index] - 5.6, size: 5.6, font, color: rgb(0.04, 0.08, 0.1) });
+      packActEntryRows(group.values).forEach((value, index) => {
+        if (!value) return;
+        const size = fitFontSize(value, font, 5.6, 3.4, 410);
+        page.drawText(fitTextToWidth(value, font, size, 410), { x: 160, y: height - group.tops[index] - size, size, font, color: rgb(0.04, 0.08, 0.1) });
       });
     }
 
@@ -178,7 +180,6 @@ async function createOvenActPdf(request: Request, env: Env) {
     const stampScale = Math.min(148 / stamp.width, 92 / stamp.height);
     page.drawImage(stamp, { x: 345, y: 59, width: stamp.width * stampScale, height: stamp.height * stampScale });
 
-    if (needsEntriesAppendix) addActEntriesPage(pdf, font, entries);
     const bytes = await pdf.save();
     const fileCode = payload.act.objectCode.replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
     return new Response(bytes, { headers: { "content-type": "application/pdf", "content-disposition": `attachment; filename="oven-act-${fileCode}-${payload.act.date}.pdf"`, "cache-control": "no-store" } });
@@ -196,6 +197,11 @@ async function createOvenActDocx(request: Request, env: Env) {
     const stampObject = await env.PRIVATE_FILES.get("director-stamp-signature.png");
     if (!stampObject) return Response.json({ error: "Печать и подпись ещё не настроены" }, { status: 503 });
     const stampBytes = new Uint8Array(await stampObject.arrayBuffer());
+    const logoResponse = env.ASSETS
+      ? await env.ASSETS.fetch(new Request(new URL("/rik-logo.png", request.url)))
+      : await fetch(new Request(new URL("/rik-logo.png", request.url)));
+    if (!logoResponse.ok) return Response.json({ error: "Логотип недоступен" }, { status: 500 });
+    const logoBytes = new Uint8Array(await logoResponse.arrayBuffer());
     const stampSize = readImageDimensions(stampBytes, "image/png");
     const stampScale = Math.min(230 / stampSize.width, 115 / stampSize.height);
     const [year, month, day] = payload.act.date.split("-");
@@ -237,7 +243,7 @@ async function createOvenActDocx(request: Request, env: Env) {
       completedWorks: normalizeEntries(payload.entries?.completedWorks),
     };
     const children: Array<Paragraph | Table> = [
-      new Paragraph({ spacing: { after: 80 }, children: [new TextRun({ text: "РИК ЛАБ", bold: true, color: "087A9F", size: 20, font: "Arial" })] }),
+      docxBrandParagraph(logoBytes),
       new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 80 }, children: [new TextRun({ text: "АКТ ВЫПОЛНЕННЫХ РАБОТ", bold: true, color: "102936", size: 30, font: "Arial" })] }),
       new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 260 }, children: [new TextRun({ text: "Техническое обслуживание печи", size: 22, color: "355967", font: "Arial" })] }),
       metadataTable,
@@ -309,14 +315,16 @@ async function createOvenPhotoReport(request: Request, env: Env) {
     if (REQUIRED_REPORT_PHOTOS.some((key) => !photoFiles.has(key))) return Response.json({ error: "Добавлены не все обязательные фотографии" }, { status: 400 });
 
     const fetchAsset = (path: string) => env.ASSETS ? env.ASSETS.fetch(new Request(new URL(path, request.url))) : fetch(new Request(new URL(path, request.url)));
-    const fontResponse = await fetchAsset("/fonts/DejaVuSans.ttf");
-    if (!fontResponse.ok) return Response.json({ error: "Шрифт отчёта недоступен" }, { status: 500 });
+    const [fontResponse, logoResponse] = await Promise.all([fetchAsset("/fonts/DejaVuSans.ttf"), fetchAsset("/rik-logo.png")]);
+    if (!fontResponse.ok || !logoResponse.ok) return Response.json({ error: "Оформление отчёта недоступно" }, { status: 500 });
     const pdf = await PDFDocument.create();
     pdf.registerFontkit(fontkit);
     const font = await pdf.embedFont(await fontResponse.arrayBuffer(), { subset: true });
+    const logo = await pdf.embedPng(await logoResponse.arrayBuffer());
     const pageSize: [number, number] = [595.92, 842.88];
     let page = pdf.addPage(pageSize);
-    let y = 786;
+    drawPdfBrand(page, logo, font, 48, 790, 34);
+    let y = 748;
     page.drawText("ФОТООТЧЁТ", { x: 48, y, size: 10, font, color: rgb(0.04, 0.42, 0.57) });
     y -= 31;
     page.drawText("Техническое обслуживание печи", { x: 48, y, size: 21, font, color: rgb(0.04, 0.13, 0.18) });
@@ -348,7 +356,8 @@ async function createOvenPhotoReport(request: Request, env: Env) {
     const photoMetadata = Array.isArray(metadata.photos) ? metadata.photos.filter((item) => photoFiles.has(item.key)) : [];
     for (let index = 0; index < photoMetadata.length; index += 1) {
       const photoPage = pdf.addPage(pageSize);
-      photoPage.drawText("Фотоотчёт по ТО печи", { x: 48, y: 798, size: 12, font, color: rgb(0.04, 0.13, 0.18) });
+      drawPdfBrand(photoPage, logo, font, 48, 792, 26);
+      photoPage.drawText("Фотоотчёт по ТО печи", { x: 365, y: 800, size: 9, font, color: rgb(0.04, 0.13, 0.18) });
       const item = photoMetadata[index];
       const file = photoFiles.get(item.key)!;
       let photo: PDFImage;
@@ -379,7 +388,7 @@ async function createOvenPhotoReport(request: Request, env: Env) {
   }
 }
 
-async function createOvenPhotoReportDocx(request: Request) {
+async function createOvenPhotoReportDocx(request: Request, env: Env) {
   try {
     const formData = await request.formData();
     const metadataValue = formData.get("metadata");
@@ -397,6 +406,11 @@ async function createOvenPhotoReportDocx(request: Request) {
     }
     if (totalBytes > 60_000_000) return Response.json({ error: "Общий размер фотографий слишком большой" }, { status: 413 });
     if (REQUIRED_REPORT_PHOTOS.some((key) => !photoFiles.has(key))) return Response.json({ error: "Добавлены не все обязательные фотографии" }, { status: 400 });
+    const logoResponse = env.ASSETS
+      ? await env.ASSETS.fetch(new Request(new URL("/rik-logo.png", request.url)))
+      : await fetch(new Request(new URL("/rik-logo.png", request.url)));
+    if (!logoResponse.ok) return Response.json({ error: "Логотип недоступен" }, { status: 500 });
+    const logoBytes = new Uint8Array(await logoResponse.arrayBuffer());
 
     const entries = {
       remarks: normalizeEntries(metadata.entries?.remarks),
@@ -412,6 +426,7 @@ async function createOvenPhotoReportDocx(request: Request) {
       ["Заказчик", metadata.act.customer || "Не указан"],
     ];
     const children: Array<Paragraph | Table> = [
+      docxBrandParagraph(logoBytes),
       new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "ФОТООТЧЁТ", bold: true, color: "087A9F", size: 20, font: "Arial" })] }),
       new Paragraph({ spacing: { after: 300 }, children: [new TextRun({ text: "Техническое обслуживание печи", bold: true, color: "102936", size: 40, font: "Arial" })] }),
       new Table({
@@ -493,7 +508,7 @@ async function storeOvenPackagePart(request: Request, env: Env) {
       const parsed = JSON.parse(metadata) as ReportMetadata;
       baseName = `${parsed.act.objectCode}-${parsed.act.ovenPosition}-${parsed.act.date}`;
       const reportRequest = new Request(endpoint, { method: "POST", body });
-      generated = kind === "report-pdf" ? await createOvenPhotoReport(reportRequest, env) : await createOvenPhotoReportDocx(reportRequest);
+      generated = kind === "report-pdf" ? await createOvenPhotoReport(reportRequest, env) : await createOvenPhotoReportDocx(reportRequest, env);
     }
     if (!generated.ok) return generated;
     const extension = kind.endsWith("pdf") ? "pdf" : "docx";
@@ -1149,36 +1164,39 @@ function normalizeEntries(values?: string[]) {
   return values.map((value) => String(value).trim().slice(0, 1000)).filter(Boolean).slice(0, 20);
 }
 
+function drawPdfBrand(page: ReturnType<PDFDocument["getPages"]>[number], logo: PDFImage, font: PDFFont, x: number, y: number, size: number) {
+  page.drawImage(logo, { x, y, width: size, height: size });
+  page.drawText("РИК ЛАБ", { x: x + size + 8, y: y + size - 11, size: 9.2, font, color: rgb(0.02, 0.14, 0.25) });
+  page.drawText("СЕРВИС ТЕХНИЧЕСКОГО ОБСЛУЖИВАНИЯ", { x: x + size + 8, y: y + 5, size: 4.6, font, color: rgb(0.3, 0.4, 0.46) });
+}
+
+function docxBrandParagraph(logoBytes: Uint8Array) {
+  return new Paragraph({
+    spacing: { after: 160 },
+    children: [
+      new ImageRun({ type: "png", data: logoBytes, transformation: { width: 34, height: 34 } }),
+      new TextRun({ text: "   РИК ЛАБ", bold: true, color: "08243F", size: 24, font: "Arial" }),
+      new TextRun({ text: "   Сервис технического обслуживания", color: "688692", size: 15, font: "Arial" }),
+    ],
+  });
+}
+
+function packActEntryRows(values: string[]) {
+  if (values.length <= 3) return [values[0] || "", values[1] || "", values[2] || ""];
+  return [values[0], values[1], values.slice(2).join("; ")];
+}
+
+function fitFontSize(value: string, font: PDFFont, preferred: number, minimum: number, maxWidth: number) {
+  let size = preferred;
+  while (size > minimum && font.widthOfTextAtSize(value, size) > maxWidth) size -= 0.2;
+  return Math.max(minimum, size);
+}
+
 function fitTextToWidth(value: string, font: PDFFont, size: number, maxWidth: number) {
   if (font.widthOfTextAtSize(value, size) <= maxWidth) return value;
   let shortened = value;
   while (shortened.length && font.widthOfTextAtSize(`${shortened}…`, size) > maxWidth) shortened = shortened.slice(0, -1);
   return `${shortened.trimEnd()}…`;
-}
-
-function addActEntriesPage(pdf: PDFDocument, font: PDFFont, entries: { remarks: string[]; recommendations: string[]; completedWorks: string[] }) {
-  let page = pdf.addPage([595.92, 842.88]);
-  let y = 795;
-  page.drawText("Приложение к акту ТО печи", { x: 48, y, size: 15, font, color: rgb(0.04, 0.13, 0.18) });
-  y -= 36;
-  const groups = [
-    ["Замечания", entries.remarks],
-    ["Рекомендации", entries.recommendations],
-    ["Выполненные работы", entries.completedWorks],
-  ] as const;
-  for (const [title, values] of groups) {
-    if (!values.length) continue;
-    if (y < 90) { page = pdf.addPage([595.92, 842.88]); y = 795; }
-    page.drawText(title, { x: 48, y, size: 11, font, color: rgb(0.04, 0.13, 0.18) });
-    y -= 22;
-    for (const [index, value] of values.entries()) {
-      const lines = wrapText(`${index + 1}. ${value}`, font, 8.5, 495);
-      if (y - lines.length * 13 < 48) { page = pdf.addPage([595.92, 842.88]); y = 795; }
-      for (const line of lines) { page.drawText(line, { x: 48, y, size: 8.5, font, color: rgb(0.06, 0.09, 0.12) }); y -= 13; }
-      y -= 6;
-    }
-    y -= 10;
-  }
 }
 
 function wrapText(value: string, font: PDFFont, size: number, maxWidth: number) {
