@@ -500,7 +500,8 @@ async function storeOvenPackagePart(request: Request, env: Env) {
     const label = kind.startsWith("act-") ? "Акт-ТО-печи" : "Фотоотчёт-ТО-печи";
     const filename = `${label}-${baseName}.${extension}`;
     const blob = await generated.blob();
-    await env.PRIVATE_FILES.put(`oven-packages/${packageId}/${part.key}`, blob, { customMetadata: { filename, type: part.type } });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    await env.PRIVATE_FILES.put(`oven-packages/${packageId}/${part.key}`, bytes, { customMetadata: { filename, type: part.type, crc32: crc32(bytes).toString(16), size: String(bytes.length) } });
     return Response.json({ ok: true, size: blob.size });
   } catch (error) {
     console.error("Failed to store oven package part", error instanceof Error ? error.message : "Unknown error");
@@ -512,23 +513,29 @@ async function finalizeOvenPackage(request: Request, env: Env) {
   try {
     const input = await request.json() as { packageId?: string; metadata?: EmailMetadata };
     if (!validPackageId(input.packageId) || !input.metadata) return Response.json({ error: "Некорректные данные комплекта" }, { status: 400 });
-    const delivery = new FormData();
-    delivery.append("metadata", JSON.stringify(input.metadata));
-    const fields = ["act", "actDocx", "reportPdf", "reportDocx"] as const;
     const parts = Object.values(PACKAGE_PARTS);
     const keys: string[] = [];
-    for (let index = 0; index < parts.length; index += 1) {
-      const key = `oven-packages/${input.packageId}/${parts[index].key}`;
+    const entries: StoredZipEntry[] = [];
+    for (const part of parts) {
+      const key = `oven-packages/${input.packageId}/${part.key}`;
       keys.push(key);
-      const object = await env.PRIVATE_FILES.get(key);
+      const object = await env.PRIVATE_FILES.head(key);
       if (!object) return Response.json({ error: "Комплект сформирован не полностью. Нажмите кнопку ещё раз" }, { status: 409 });
-      const filename = object.customMetadata?.filename || parts[index].key;
-      const type = object.customMetadata?.type || parts[index].type;
-      delivery.append(fields[index], new File([await object.arrayBuffer()], filename, { type }), filename);
+      entries.push({ key, filename: object.customMetadata?.filename || part.key, size: Number(object.customMetadata?.size || object.size), crc: Number.parseInt(object.customMetadata?.crc32 || "0", 16) >>> 0 });
     }
-    const response = await sendOvenReportEmail(new Request(new URL(request.url), { method: "POST", body: delivery }), env);
-    if (response.ok) await Promise.all(keys.map((key) => env.PRIVATE_FILES.delete(key)));
-    return response;
+    const objectCode = String(input.metadata.objectCode || "отчёт").replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
+    const date = String(input.metadata.date || "без-даты");
+    const archiveName = `ТО-печи-${objectCode}-${date}.zip`;
+    const archiveKey = `oven-packages/${input.packageId}/archive.zip`;
+    await env.PRIVATE_FILES.put(archiveKey, createStoredZipStream(env, entries), { customMetadata: { filename: archiveName, type: "application/zip" } });
+    const archiveForMail = await env.PRIVATE_FILES.get(archiveKey);
+    if (!archiveForMail) throw new Error("Archive was not stored");
+    await sendArchiveEmail(input.metadata, archiveForMail, archiveName, env);
+    await Promise.all(keys.map((key) => env.PRIVATE_FILES.delete(key)));
+    const archiveForDownload = await env.PRIVATE_FILES.get(archiveKey);
+    if (!archiveForDownload) throw new Error("Archive is unavailable");
+    const fallbackName = safeAsciiFilename(archiveName, "application/zip");
+    return new Response(archiveForDownload.body, { headers: { "content-type": "application/zip", "content-length": String(archiveForDownload.size), "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archiveName)}`, "cache-control": "no-store", "x-mail-recipient": env.MAIL_TO || "" } });
   } catch (error) {
     console.error("Failed to finalize oven package", error instanceof Error ? error.message : "Unknown error");
     return Response.json({ error: "Не удалось упаковать и отправить документы" }, { status: 500 });
@@ -704,6 +711,109 @@ async function createStoredZip(files: File[]) {
   return concatBytes([...localParts, ...centralParts, endHeader]);
 }
 
+type StoredZipEntry = {
+  key: string;
+  filename: string;
+  size: number;
+  crc: number;
+};
+
+function createStoredZipStream(env: Env, entries: StoredZipEntry[]) {
+  const encoder = new TextEncoder();
+  const now = new Date();
+  const dosTime = ((now.getHours() & 31) << 11) | ((now.getMinutes() & 63) << 5) | ((Math.floor(now.getSeconds() / 2)) & 31);
+  const dosDate = (((Math.max(1980, now.getFullYear()) - 1980) & 127) << 9) | (((now.getMonth() + 1) & 15) << 5) | (now.getDate() & 31);
+
+  async function* chunks() {
+    const centralParts: Uint8Array[] = [];
+    let localOffset = 0;
+
+    for (const entry of entries) {
+      const name = encoder.encode(entry.filename.replace(/[\\/]/g, "-"));
+      const localHeader = new Uint8Array(30);
+      const local = new DataView(localHeader.buffer);
+      local.setUint32(0, 0x04034b50, true);
+      local.setUint16(4, 20, true);
+      local.setUint16(6, 0x0800, true);
+      local.setUint16(8, 0, true);
+      local.setUint16(10, dosTime, true);
+      local.setUint16(12, dosDate, true);
+      local.setUint32(14, entry.crc, true);
+      local.setUint32(18, entry.size, true);
+      local.setUint32(22, entry.size, true);
+      local.setUint16(26, name.length, true);
+      local.setUint16(28, 0, true);
+      yield localHeader;
+      yield name;
+
+      const object = await env.PRIVATE_FILES.get(entry.key);
+      if (!object) throw new Error("Stored package part is missing");
+      const reader = object.body.getReader();
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value?.length) yield value;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      const centralHeader = new Uint8Array(46);
+      const central = new DataView(centralHeader.buffer);
+      central.setUint32(0, 0x02014b50, true);
+      central.setUint16(4, 20, true);
+      central.setUint16(6, 20, true);
+      central.setUint16(8, 0x0800, true);
+      central.setUint16(10, 0, true);
+      central.setUint16(12, dosTime, true);
+      central.setUint16(14, dosDate, true);
+      central.setUint32(16, entry.crc, true);
+      central.setUint32(20, entry.size, true);
+      central.setUint32(24, entry.size, true);
+      central.setUint16(28, name.length, true);
+      central.setUint16(30, 0, true);
+      central.setUint16(32, 0, true);
+      central.setUint16(34, 0, true);
+      central.setUint16(36, 0, true);
+      central.setUint32(38, 0, true);
+      central.setUint32(42, localOffset, true);
+      centralParts.push(centralHeader, name);
+      localOffset += localHeader.length + name.length + entry.size;
+    }
+
+    const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+    for (const part of centralParts) yield part;
+    const endHeader = new Uint8Array(22);
+    const end = new DataView(endHeader.buffer);
+    end.setUint32(0, 0x06054b50, true);
+    end.setUint16(4, 0, true);
+    end.setUint16(6, 0, true);
+    end.setUint16(8, entries.length, true);
+    end.setUint16(10, entries.length, true);
+    end.setUint32(12, centralSize, true);
+    end.setUint32(16, localOffset, true);
+    end.setUint16(20, 0, true);
+    yield endHeader;
+  }
+
+  const iterator = chunks();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await iterator.next();
+        if (next.done) controller.close();
+        else controller.enqueue(next.value);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel() {
+      await iterator.return?.();
+    },
+  });
+}
+
 function concatBytes(parts: Uint8Array[]) {
   const total = parts.reduce((sum, part) => sum + part.length, 0);
   const output = new Uint8Array(total);
@@ -773,7 +883,88 @@ function wrapBase64(value: string) {
   return value.match(/.{1,76}/g)?.join("\r\n") || "";
 }
 
-async function smtpSend(env: Env, message: string) {
+async function sendArchiveEmail(metadata: EmailMetadata, archive: R2ObjectBody, archiveName: string, env: Env) {
+  if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASSWORD || !env.MAIL_FROM || !env.MAIL_TO) throw new Error("Mail is not configured");
+  const clean = (value: unknown, fallback: string) => String(value || fallback).replace(/[\r\n]+/g, " ").trim().slice(0, 180);
+  const objectCode = clean(metadata.objectCode, "без номера");
+  const date = clean(metadata.date, "без даты");
+  const serviceType = clean(metadata.serviceType, "ТО печи");
+  const pizzeriaAddress = clean(metadata.pizzeriaAddress, "адрес не указан");
+  const ovenModel = clean(metadata.ovenModel, "модель не указана");
+  const ovenPosition = clean(metadata.ovenPosition, "положение не указано");
+  const technicianName = clean(metadata.technicianName, "не указан");
+  const displayDate = formatRussianDate(date);
+  const subject = `${objectCode} — ${serviceType} — ${displayDate}`;
+  const body = [
+    "Документы по техническому обслуживанию печи сформированы на сайте РИК ЛАБ.",
+    "",
+    `Объект: ${objectCode}`,
+    `Адрес: ${pizzeriaAddress}`,
+    `Вид ТО: ${serviceType}`,
+    `Дата: ${displayDate}`,
+    `Печь: ${ovenModel} (${ovenPosition})`,
+    `Инженер: ${technicianName}`,
+    "",
+    "Во вложении ZIP-архив: акт PDF, редактируемый акт DOCX, фотоотчёт PDF и редактируемый фотоотчёт DOCX.",
+  ].join("\r\n");
+  const boundary = `riklab-${crypto.randomUUID()}`;
+  const fallbackName = safeAsciiFilename(archiveName, "application/zip");
+
+  await smtpSend(env, async (write) => {
+    await write([
+      `From: ${formatMailbox(env.MAIL_FROM!)}`,
+      `To: ${formatMailbox(env.MAIL_TO!)}`,
+      `Subject: ${encodeMimeHeader(subject)}`,
+      `Date: ${new Date().toUTCString()}`,
+      `Message-ID: <${crypto.randomUUID()}@riklab.ru>`,
+      "MIME-Version: 1.0",
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "Content-Transfer-Encoding: base64",
+      "",
+      wrapBase64(base64Utf8(body)),
+      `--${boundary}`,
+      `Content-Type: application/zip; name="${fallbackName}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archiveName)}`,
+      "",
+    ].join("\r\n"));
+    await writeBase64Stream(archive.body, write);
+    await write(`\r\n--${boundary}--\r\n`);
+  });
+}
+
+async function writeBase64Stream(stream: ReadableStream<Uint8Array>, write: (chunk: string) => Promise<void>) {
+  const reader = stream.getReader();
+  let carry = new Uint8Array(0);
+  let hasOutput = false;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value?.length) continue;
+      const combined = new Uint8Array(carry.length + value.length);
+      combined.set(carry);
+      combined.set(value, carry.length);
+      const processLength = Math.floor(combined.length / 57) * 57;
+      if (processLength) {
+        const encoded = wrapBase64(base64Bytes(combined.subarray(0, processLength)));
+        await write(`${hasOutput ? "\r\n" : ""}${encoded}`);
+        hasOutput = true;
+      }
+      carry = combined.slice(processLength);
+    }
+    if (carry.length) await write(`${hasOutput ? "\r\n" : ""}${wrapBase64(base64Bytes(carry))}`);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+type SmtpMessage = string | ((write: (chunk: string) => Promise<void>) => Promise<void>);
+
+async function smtpSend(env: Env, message: SmtpMessage) {
   const { connect } = await import("cloudflare:sockets");
   const socket = connect(
     { hostname: env.SMTP_HOST!, port: Number(env.SMTP_PORT || 465) },
@@ -828,8 +1019,13 @@ async function smtpSend(env: Env, message: string) {
     await command(`MAIL FROM:${formatMailbox(env.MAIL_FROM!)}`, [250]);
     await command(`RCPT TO:${formatMailbox(env.MAIL_TO!)}`, [250, 251]);
     await command("DATA", [354]);
-    const dotStuffed = message.replace(/(^|\r\n)\./g, "$1..");
-    await writer.write(encoder.encode(`${dotStuffed}\r\n.\r\n`));
+    if (typeof message === "string") {
+      const dotStuffed = message.replace(/(^|\r\n)\./g, "$1..");
+      await writer.write(encoder.encode(dotStuffed));
+    } else {
+      await message(async (chunk) => writer.write(encoder.encode(chunk)));
+    }
+    await writer.write(encoder.encode("\r\n.\r\n"));
     await expect([250]);
     await command("QUIT", [221]);
   } finally {
