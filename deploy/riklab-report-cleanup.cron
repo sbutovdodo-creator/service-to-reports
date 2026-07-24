@@ -1,0 +1,1 @@
+17 * * * * root find /var/lib/riklab-report/oven-packages -mindepth 1 -maxdepth 1 -type d -mmin +1440 -exec rm -rf -- {} +
