@@ -32,6 +32,7 @@ const CHECKLIST_KEY = "oven-checklist-draft-v1";
 const ACT_ENTRIES_KEY = "oven-act-entries-draft-v1";
 const STEP_KEY = "oven-maintenance-step-v1";
 const EXTRA_PHOTO_PREFIX = "extra-work-";
+const SLOT_PHOTO_SEPARATOR = "--photo-";
 const technicians = ["Давыдов Алексей", "Кусков Сергей", "Пахомов Александр", "Рубцов Алексей", "Фефелов Сергей", "Эсанов Бахром", "Эсанбоев Анвар"];
 const ovenModels = ["XLT3240", "Robochef", "Zanolli 11/65", "Turbochef"];
 
@@ -161,34 +162,54 @@ export default function OvenMaintenancePage() {
     setChecklist((current) => ({ ...current, [itemId]: { ...current[itemId], ...patch } }));
   }
 
-  async function handlePhotoChange(key: string, event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+  async function handlePhotoChange(slotKey: string, event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
     event.target.value = "";
-    if (!file) return;
-    setProcessingPhoto(key);
+    if (!files.length) return;
+    setProcessingPhoto(slotKey);
     setPhotoError("");
-    try {
-      const blob = await compressPhoto(file);
-      const photo = await saveStoredPhoto(key, blob);
-      setPhotos((current) => ({ ...current, [key]: photo }));
-      setGeneratedReport(null);
-      setGeneratedReportDocx(null);
-    } catch {
-      setPhotoError("Не удалось прочитать изображение. Попробуйте выбрать его из приложения «Фото» или сделать новый снимок камерой.");
-    } finally {
-      setProcessingPhoto(null);
+    let hasPrimaryPhoto = Boolean(photos[slotKey]);
+    for (const [index, file] of files.entries()) {
+      const key = hasPrimaryPhoto
+        ? `${slotKey}${SLOT_PHOTO_SEPARATOR}${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`
+        : slotKey;
+      try {
+        const blob = await compressPhoto(file);
+        const photo = await saveStoredPhoto(key, blob);
+        const orderedPhoto = { ...photo, updatedAt: photo.updatedAt + index };
+        setPhotos((current) => ({ ...current, [key]: orderedPhoto }));
+        hasPrimaryPhoto = true;
+      } catch {
+        setPhotoError("Одно из изображений не удалось прочитать. Попробуйте выбрать его из приложения «Фото» или сделать новый снимок камерой.");
+      }
     }
+    setProcessingPhoto(null);
   }
 
   async function deletePhoto(key: string) {
     await removeStoredPhoto(key).catch(() => undefined);
+    const baseSlot = allPhotoSlots.find((slot) => key === slot.key || key.startsWith(`${slot.key}${SLOT_PHOTO_SEPARATOR}`));
+    let promotedPhoto: StoredPhoto | undefined;
+    let promotedFromKey: string | undefined;
+    if (baseSlot && key === baseSlot.key) {
+      const replacement = Object.values(photos)
+        .filter((photo) => photo.key.startsWith(`${baseSlot.key}${SLOT_PHOTO_SEPARATOR}`))
+        .sort((left, right) => left.updatedAt - right.updatedAt)[0];
+      if (replacement) {
+        promotedFromKey = replacement.key;
+        promotedPhoto = await saveStoredPhoto(baseSlot.key, replacement.blob);
+        await removeStoredPhoto(replacement.key).catch(() => undefined);
+      }
+    }
     setPhotos((current) => {
       const next = { ...current };
       delete next[key];
+      if (promotedPhoto && baseSlot) {
+        if (promotedFromKey) delete next[promotedFromKey];
+        next[baseSlot.key] = promotedPhoto;
+      }
       return next;
     });
-    setGeneratedReport(null);
-    setGeneratedReportDocx(null);
   }
 
   async function addExtraPhotos(event: ChangeEvent<HTMLInputElement>) {
@@ -203,8 +224,6 @@ export default function OvenMaintenancePage() {
         const photo = await saveStoredPhoto(key, blob);
         const orderedPhoto = { ...photo, updatedAt: photo.updatedAt + index };
         setPhotos((current) => ({ ...current, [key]: orderedPhoto }));
-        setGeneratedReport(null);
-        setGeneratedReportDocx(null);
       } catch {
         setPhotoError("Одно из изображений не удалось прочитать. Попробуйте выбрать его из приложения «Фото».");
       }
@@ -302,7 +321,16 @@ export default function OvenMaintenancePage() {
   }
 
   function createReportBody(sourcePhotos: Record<string, StoredPhoto>) {
-    const regularItems = allPhotoSlots.filter((slot) => sourcePhotos[slot.key]).map((slot) => ({ key: slot.key, title: `${slot.requirementTitle} — ${slot.label}`, required: slot.required }));
+    const regularItems = allPhotoSlots.flatMap((slot) => {
+      const slotPhotos = Object.values(sourcePhotos)
+        .filter((photo) => photo.key === slot.key || photo.key.startsWith(`${slot.key}${SLOT_PHOTO_SEPARATOR}`))
+        .sort((left, right) => left.key === slot.key ? -1 : right.key === slot.key ? 1 : left.updatedAt - right.updatedAt);
+      return slotPhotos.map((photo, index) => ({
+        key: photo.key,
+        title: `${slot.requirementTitle} — ${slot.label}${slotPhotos.length > 1 ? ` — фото ${index + 1}` : ""}`,
+        required: slot.required && index === 0,
+      }));
+    });
     const optimizedExtraPhotos = Object.values(sourcePhotos).filter((photo) => photo.key.startsWith(EXTRA_PHOTO_PREFIX)).sort((left, right) => left.updatedAt - right.updatedAt);
     const extraItems = optimizedExtraPhotos.map((photo, index) => ({ key: photo.key, title: `Дополнительные работы — фото ${index + 1}`, required: false }));
     const photoItems = [...regularItems, ...extraItems];
@@ -351,7 +379,7 @@ export default function OvenMaintenancePage() {
               <label className="camera-action">Камера<input type="file" accept="image/*,.heic,.heif,.avif,.webp" capture="environment" onChange={addExtraPhotos} /></label>
               <label className="gallery-action">Галерея<input type="file" accept="image/*,.heic,.heif,.avif,.webp" multiple onChange={addExtraPhotos} /></label>
             </div>
-            {extraPhotos.length > 0 && <div className="extra-photo-grid">{extraPhotos.map((photo, index) => <PhotoSlotButton slot={{ key: photo.key, label: `Фото ${index + 1}`, required: false }} photo={photo} processing={processingPhoto === photo.key} onChange={handlePhotoChange} onDelete={deletePhoto} key={photo.key} />)}</div>}
+            {extraPhotos.length > 0 && <div className="extra-photo-grid">{extraPhotos.map((photo, index) => <PhotoPreviewCard photo={photo} label={`Фото ${index + 1}`} onDelete={deletePhoto} key={photo.key} />)}</div>}
           </article>
           {photoError && <p className="pdf-error" role="alert">{photoError}</p>}
           <p className="photo-storage-note">Обязательные фото нужны только для формирования отдельного фотоотчёта. Условные фотографии помечены как необязательные.</p>
@@ -408,29 +436,44 @@ function PhotoRequirementRow({ requirement, index, photos, processingPhoto, onCh
   return (
     <article className="photo-requirement-row">
       <div className="photo-requirement-copy"><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{requirement.title}</strong>{requirement.note && <small>{requirement.note}</small>}</div></div>
-      <div className="photo-slot-list">{requirement.slots.map((slot) => <PhotoSlotButton slot={slot} photo={photos[slot.key]} processing={processingPhoto === slot.key} onChange={onChange} onDelete={onDelete} key={slot.key} />)}</div>
+      <div className="photo-slot-list">{requirement.slots.map((slot) => {
+        const slotPhotos = Object.values(photos)
+          .filter((photo) => photo.key === slot.key || photo.key.startsWith(`${slot.key}${SLOT_PHOTO_SEPARATOR}`))
+          .sort((left, right) => left.key === slot.key ? -1 : right.key === slot.key ? 1 : left.updatedAt - right.updatedAt);
+        return <PhotoSlotGroup slot={slot} photos={slotPhotos} processing={processingPhoto === slot.key} onChange={onChange} onDelete={onDelete} key={slot.key} />;
+      })}</div>
     </article>
   );
 }
 
-function PhotoSlotButton({ slot, photo, processing, onChange, onDelete }: { slot: (typeof photoRequirements)[number]["slots"][number]; photo?: StoredPhoto; processing: boolean; onChange: (key: string, event: ChangeEvent<HTMLInputElement>) => void; onDelete: (key: string) => void; }) {
+function PhotoSlotGroup({ slot, photos, processing, onChange, onDelete }: { slot: (typeof photoRequirements)[number]["slots"][number]; photos: StoredPhoto[]; processing: boolean; onChange: (key: string, event: ChangeEvent<HTMLInputElement>) => void; onDelete: (key: string) => void; }) {
+  return (
+    <div className={`photo-slot-group${photos.length ? " has-photos" : ""}`}>
+      <div className="photo-slot-group-heading">
+        <strong>{slot.label}</strong>
+        <small>{photos.length ? `${photos.length} фото` : slot.required ? "минимум 1 фото" : "необязательно"}</small>
+      </div>
+      <div className="photo-source-actions">
+        <label className="camera-action">{processing ? "Обработка…" : photos.length ? "Ещё с камеры" : "Сделать фото"}<input type="file" accept="image/*,.heic,.heif,.avif,.webp" capture="environment" onChange={(event) => onChange(slot.key, event)} disabled={processing} /></label>
+        <label className="gallery-action">{photos.length ? "Добавить фото" : "Выбрать фото"}<input type="file" accept="image/*,.heic,.heif,.avif,.webp" multiple onChange={(event) => onChange(slot.key, event)} disabled={processing} /></label>
+      </div>
+      {photos.length > 0 && <div className="photo-slot-previews">{photos.map((photo, index) => <PhotoPreviewCard photo={photo} label={`${slot.label}, фото ${index + 1}`} onDelete={onDelete} key={photo.key} />)}</div>}
+    </div>
+  );
+}
+
+function PhotoPreviewCard({ photo, label, onDelete }: { photo: StoredPhoto; label: string; onDelete: (key: string) => void; }) {
   const [preview, setPreview] = useState("");
   useEffect(() => {
-    if (!photo) { setPreview(""); return; }
     const url = URL.createObjectURL(photo.blob);
     setPreview(url);
     return () => URL.revokeObjectURL(url);
   }, [photo]);
   return (
-    <div className={`photo-slot${photo ? " has-photo" : ""}`}>
+    <div className="photo-slot has-photo">
       {preview && <img src={preview} alt="" />}
-      <strong>{processing ? "Обработка…" : photo ? `✓ ${slot.label}` : slot.label}</strong>
-      {!slot.required && !photo && <small>необязательно</small>}
-      <div className="photo-source-actions">
-        <label className="camera-action">Сделать фото<input type="file" accept="image/*,.heic,.heif,.avif,.webp" capture="environment" onChange={(event) => onChange(slot.key, event)} disabled={processing} /></label>
-        <label className="gallery-action">Выбрать файл<input type="file" accept="image/*,.heic,.heif,.avif,.webp" onChange={(event) => onChange(slot.key, event)} disabled={processing} /></label>
-      </div>
-      {photo && <button type="button" onClick={() => onDelete(slot.key)} aria-label={`Удалить фото: ${slot.label}`}>×</button>}
+      <strong>✓ {label}</strong>
+      <button type="button" onClick={() => onDelete(photo.key)} aria-label={`Удалить фото: ${label}`}>×</button>
     </div>
   );
 }
