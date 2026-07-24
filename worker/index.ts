@@ -9,6 +9,12 @@ interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   PRIVATE_FILES: R2Bucket;
+  CONNECT?: (address: { hostname: string; port: number }, options: { secureTransport: "on"; allowHalfOpen: boolean }) => {
+    readable: ReadableStream<Uint8Array>;
+    writable: WritableStream<Uint8Array>;
+    opened: Promise<unknown>;
+    close(): void;
+  };
   APP_AUTH_LOGIN?: string;
   APP_AUTH_PASSWORD?: string;
   APP_AUTH_SECRET?: string;
@@ -978,7 +984,7 @@ async function writeBase64Stream(stream: ReadableStream<Uint8Array>, write: (chu
 type SmtpMessage = string | ((write: (chunk: string) => Promise<void>) => Promise<void>);
 
 async function smtpSend(env: Env, message: SmtpMessage) {
-  const { connect } = await import("cloudflare:sockets");
+  const connect = env.CONNECT || (await import("cloudflare:sockets")).connect;
   const socket = connect(
     { hostname: env.SMTP_HOST!, port: Number(env.SMTP_PORT || 465) },
     { secureTransport: "on", allowHalfOpen: false },

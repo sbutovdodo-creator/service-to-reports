@@ -1,0 +1,15 @@
+.git
+.next
+.vinext
+.wrangler
+dist
+dist-node
+node_modules
+outputs
+private-assets
+tmp
+work
+work-package-*
+*.log
+.dev.vars
+.env*
