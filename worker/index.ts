@@ -484,6 +484,7 @@ const PACKAGE_PARTS = {
   "report-pdf": { key: "report.pdf", type: "application/pdf" },
   "report-docx": { key: "report.docx", type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
 } as const;
+const SMTP_ARCHIVE_RAW_LIMIT = 32_000_000;
 
 function validPackageId(value: unknown): value is string {
   return typeof value === "string" && /^[a-z0-9-]{20,64}$/.test(value);
@@ -544,9 +545,27 @@ async function finalizeOvenPackage(request: Request, env: Env) {
     const date = String(input.metadata.date || "без-даты");
     const archiveName = `ТО-печи-${objectCode}-${date}.zip`;
     const archiveSize = storedZipSize(entries);
-    await sendArchiveEmail(input.metadata, createStoredZipStream(env, entries), archiveName, env);
+    const emailGroups = splitEntriesForEmail(entries);
+    let mailStatus = "sent";
+    try {
+      for (const [index, group] of emailGroups.entries()) {
+        const partName = emailGroups.length > 1
+          ? archiveName.replace(/\.zip$/i, `-часть-${index + 1}-из-${emailGroups.length}.zip`)
+          : archiveName;
+        await sendArchiveEmail(
+          input.metadata,
+          createStoredZipStream(env, group),
+          partName,
+          env,
+          { index: index + 1, total: emailGroups.length },
+        );
+      }
+    } catch (error) {
+      mailStatus = "failed";
+      console.error("Failed to email oven package", error instanceof Error ? error.message : "Unknown error");
+    }
     const fallbackName = safeAsciiFilename(archiveName, "application/zip");
-    return new Response(createStoredZipStream(env, entries), { headers: { "content-type": "application/zip", "content-length": String(archiveSize), "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archiveName)}`, "cache-control": "no-store", "x-mail-recipient": env.MAIL_TO || "" } });
+    return new Response(createStoredZipStream(env, entries), { headers: { "content-type": "application/zip", "content-length": String(archiveSize), "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archiveName)}`, "cache-control": "no-store", "x-mail-recipient": env.MAIL_TO || "", "x-mail-status": mailStatus } });
   } catch (error) {
     console.error("Failed to finalize oven package", error instanceof Error ? error.message : "Unknown error");
     return Response.json({ error: "Не удалось упаковать и отправить документы" }, { status: 500 });
@@ -833,6 +852,22 @@ function storedZipSize(entries: StoredZipEntry[]) {
   }, 22);
 }
 
+function splitEntriesForEmail(entries: StoredZipEntry[]) {
+  const groups: StoredZipEntry[][] = [];
+  let current: StoredZipEntry[] = [];
+  for (const entry of entries) {
+    const candidate = [...current, entry];
+    if (current.length && storedZipSize(candidate) > SMTP_ARCHIVE_RAW_LIMIT) {
+      groups.push(current);
+      current = [entry];
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length) groups.push(current);
+  return groups;
+}
+
 function concatBytes(parts: Uint8Array[]) {
   const total = parts.reduce((sum, part) => sum + part.length, 0);
   const output = new Uint8Array(total);
@@ -902,7 +937,7 @@ function wrapBase64(value: string) {
   return value.match(/.{1,76}/g)?.join("\r\n") || "";
 }
 
-async function sendArchiveEmail(metadata: EmailMetadata, archive: ReadableStream<Uint8Array>, archiveName: string, env: Env) {
+async function sendArchiveEmail(metadata: EmailMetadata, archive: ReadableStream<Uint8Array>, archiveName: string, env: Env, part: { index: number; total: number }) {
   if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASSWORD || !env.MAIL_FROM || !env.MAIL_TO) throw new Error("Mail is not configured");
   const clean = (value: unknown, fallback: string) => String(value || fallback).replace(/[\r\n]+/g, " ").trim().slice(0, 180);
   const objectCode = clean(metadata.objectCode, "без номера");
@@ -913,7 +948,7 @@ async function sendArchiveEmail(metadata: EmailMetadata, archive: ReadableStream
   const ovenPosition = clean(metadata.ovenPosition, "положение не указано");
   const technicianName = clean(metadata.technicianName, "не указан");
   const displayDate = formatRussianDate(date);
-  const subject = `${objectCode} — ${serviceType} — ${displayDate}`;
+  const subject = `${objectCode} — ${serviceType} — ${displayDate}${part.total > 1 ? ` — часть ${part.index} из ${part.total}` : ""}`;
   const body = [
     "Документы по техническому обслуживанию печи сформированы на сайте РИК ЛАБ.",
     "",
@@ -924,7 +959,9 @@ async function sendArchiveEmail(metadata: EmailMetadata, archive: ReadableStream
     `Печь: ${ovenModel} (${ovenPosition})`,
     `Инженер: ${technicianName}`,
     "",
-    "Во вложении ZIP-архив: акт PDF, редактируемый акт DOCX, фотоотчёт PDF и редактируемый фотоотчёт DOCX.",
+    part.total > 1
+      ? `Во вложении часть ${part.index} из ${part.total} комплекта документов. Все части относятся к одному техническому обслуживанию.`
+      : "Во вложении ZIP-архив: акт PDF, редактируемый акт DOCX, фотоотчёт PDF и редактируемый фотоотчёт DOCX.",
   ].join("\r\n");
   const boundary = `riklab-${crypto.randomUUID()}`;
   const fallbackName = safeAsciiFilename(archiveName, "application/zip");

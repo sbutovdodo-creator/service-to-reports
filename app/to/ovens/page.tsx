@@ -304,6 +304,7 @@ export default function OvenMaintenancePage() {
         const result = await deliveryResponse.json().catch(() => ({ error: "Не удалось отправить архив" }));
         throw new Error(result.error || "Не удалось отправить архив");
       }
+      const mailStatus = deliveryResponse.headers.get("x-mail-status");
       const archive = await deliveryResponse.blob();
       const archiveName = `ТО-печи-${form.objectCode}-${form.date}.zip`;
       const link = document.createElement("a");
@@ -311,7 +312,12 @@ export default function OvenMaintenancePage() {
       link.download = archiveName;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(link.href), 5_000);
-      setSaveLabel("ZIP скачан и отправлен на info@riklab.ru");
+      if (mailStatus === "failed") {
+        setSaveLabel("ZIP скачан на устройство");
+        setPdfError("Документы созданы и ZIP скачан, но почтовый сервер не принял письмо. Черновик сохранён — попробуйте отправить комплект ещё раз.");
+      } else {
+        setSaveLabel("ZIP скачан и отправлен на info@riklab.ru");
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Не удалось сформировать документы";
       setPdfError(message === "Load failed" || message === "Failed to fetch" ? "Связь прервалась. Черновик сохранён — нажмите кнопку ещё раз при устойчивом интернете." : message);
