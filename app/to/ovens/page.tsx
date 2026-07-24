@@ -375,8 +375,22 @@ export default function OvenMaintenancePage() {
       </div>
 
       <form className="one-page-form" onSubmit={handleSubmit}>
+        <section className="form-section compact-form-section act-data-section">
+          <div className="checklist-section-heading"><span>01</span><div><h2>Данные акта</h2><p>Объект, оборудование и инженер</p></div></div>
+          <label className="field object-field"><span>Объект *</span><select value={form.objectId} onChange={(event) => selectObject(event.target.value)} required><option value="">Выберите объект</option>{siteGroups.map((group) => <optgroup label={group} key={group}>{siteObjects.filter((site) => site.group === group).map((site) => <option value={site.id} key={site.id}>{site.code} — {site.address}</option>)}</optgroup>)}</select></label>
+          {form.objectId && <div className="object-summary" aria-live="polite"><div><span>Заказчик</span><strong>{form.customer || "Будет добавлен позже"}</strong></div><div><span>Пиццерия</span><strong>{form.objectCode}</strong><p>{form.pizzeriaAddress}</p></div></div>}
+          <div className="compact-field-grid">
+            <label className="field"><span>Дата работ *</span><input type="date" value={form.date} onChange={(event) => updateField("date", event.target.value)} required /></label>
+            <label className="field"><span>Модель печи *</span><select value={form.ovenModel} onChange={(event) => updateField("ovenModel", event.target.value)} required><option value="">Выберите модель</option>{ovenModels.map((model) => <option value={model} key={model}>{model}</option>)}</select></label>
+            <label className="field"><span>Расположение печи *</span><select value={form.ovenPosition} onChange={(event) => updateField("ovenPosition", event.target.value)} required><option value="">Выберите расположение</option><option value="верхняя">Верхняя</option><option value="нижняя">Нижняя</option></select></label>
+            <label className="field"><span>Инженер *</span><select value={form.technicianName} onChange={(event) => updateField("technicianName", event.target.value)} required><option value="">Выберите инженера</option>{technicians.map((technician) => <option value={technician} key={technician}>{technician}</option>)}</select></label>
+            <label className="field"><span>Серийный номер <small>необязательно</small></span><input value={form.serialNumber} onChange={(event) => updateField("serialNumber", event.target.value)} placeholder="Можно заполнить позже" autoCapitalize="characters" /></label>
+          </div>
+          <div className="act-fixed-meta"><span>Исполнитель: <strong>{form.contractor}</strong></span><span>Вид ТО: <strong>{form.serviceType}</strong></span></div>
+        </section>
+
         <section className="checklist-section photo-report-section" aria-labelledby="photo-report-title">
-          <div className="checklist-section-heading"><span>01</span><div><h2 id="photo-report-title">Обязательные фотографии</h2><p>{completedRequiredPhotos} из {requiredPhotoSlots.length} обязательных фото добавлено</p></div></div>
+          <div className="checklist-section-heading"><span>02</span><div><h2 id="photo-report-title">Обязательные фотографии</h2><p>{completedRequiredPhotos} из {requiredPhotoSlots.length} обязательных фото добавлено</p></div></div>
           <div className="photo-progress" aria-hidden="true"><span style={{ width: `${requiredPhotoSlots.length ? completedRequiredPhotos / requiredPhotoSlots.length * 100 : 0}%` }} /></div>
           <div className="photo-requirements">{photoRequirements.map((requirement, index) => <PhotoRequirementRow requirement={requirement} index={index} photos={photos} processingPhoto={processingPhoto} onChange={handlePhotoChange} onDelete={deletePhoto} key={requirement.id} />)}</div>
           <article className="photo-requirement-row extra-photo-row">
@@ -389,20 +403,6 @@ export default function OvenMaintenancePage() {
           </article>
           {photoError && <p className="pdf-error" role="alert">{photoError}</p>}
           <p className="photo-storage-note">Обязательные фото нужны только для формирования отдельного фотоотчёта. Условные фотографии помечены как необязательные.</p>
-        </section>
-
-        <section className="form-section compact-form-section act-data-section">
-          <div className="checklist-section-heading"><span>02</span><div><h2>Данные акта</h2><p>Объект, оборудование и инженер</p></div></div>
-          <label className="field object-field"><span>Объект *</span><select value={form.objectId} onChange={(event) => selectObject(event.target.value)} required><option value="">Выберите объект</option>{siteGroups.map((group) => <optgroup label={group} key={group}>{siteObjects.filter((site) => site.group === group).map((site) => <option value={site.id} key={site.id}>{site.code} — {site.address}</option>)}</optgroup>)}</select></label>
-          {form.objectId && <div className="object-summary" aria-live="polite"><div><span>Заказчик</span><strong>{form.customer || "Будет добавлен позже"}</strong></div><div><span>Пиццерия</span><strong>{form.objectCode}</strong><p>{form.pizzeriaAddress}</p></div></div>}
-          <div className="compact-field-grid">
-            <label className="field"><span>Дата работ *</span><input type="date" value={form.date} onChange={(event) => updateField("date", event.target.value)} required /></label>
-            <label className="field"><span>Модель печи *</span><select value={form.ovenModel} onChange={(event) => updateField("ovenModel", event.target.value)} required><option value="">Выберите модель</option>{ovenModels.map((model) => <option value={model} key={model}>{model}</option>)}</select></label>
-            <label className="field"><span>Расположение печи *</span><select value={form.ovenPosition} onChange={(event) => updateField("ovenPosition", event.target.value)} required><option value="">Выберите расположение</option><option value="верхняя">Верхняя</option><option value="нижняя">Нижняя</option></select></label>
-            <label className="field"><span>Инженер *</span><select value={form.technicianName} onChange={(event) => updateField("technicianName", event.target.value)} required><option value="">Выберите инженера</option>{technicians.map((technician) => <option value={technician} key={technician}>{technician}</option>)}</select></label>
-            <label className="field"><span>Серийный номер <small>необязательно</small></span><input value={form.serialNumber} onChange={(event) => updateField("serialNumber", event.target.value)} placeholder="Можно заполнить позже" autoCapitalize="characters" /></label>
-          </div>
-          <div className="act-fixed-meta"><span>Исполнитель: <strong>{form.contractor}</strong></span><span>Вид ТО: <strong>{form.serviceType}</strong></span></div>
         </section>
 
         <section className="checklist-section" aria-labelledby="inspection-title">
