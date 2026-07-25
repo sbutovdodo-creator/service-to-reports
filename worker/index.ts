@@ -986,7 +986,7 @@ async function sendArchiveEmail(metadata: EmailMetadata, archive: ReadableStream
       "Content-Transfer-Encoding: base64",
       `Content-Disposition: attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archiveName)}`,
       "",
-    ].join("\r\n"));
+    ].join("\r\n") + "\r\n");
     await writeBase64Stream(archive, write);
     await write(`\r\n--${boundary}--\r\n`);
   });
