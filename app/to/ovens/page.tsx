@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { ovenChecklist } from "./checklist";
 import { siteGroups, siteObjects } from "./objects";
 import { allPhotoSlots, photoRequirements, requiredPhotoSlots } from "./photos";
@@ -33,6 +33,7 @@ const ACT_ENTRIES_KEY = "oven-act-entries-draft-v1";
 const STEP_KEY = "oven-maintenance-step-v1";
 const EXTRA_PHOTO_PREFIX = "extra-work-";
 const SLOT_PHOTO_SEPARATOR = "--photo-";
+const IMAGE_FILE_EXTENSION = /\.(?:avif|heic|heif|jpe?g|png|webp)$/i;
 const technicians = ["Давыдов Алексей", "Кусков Сергей", "Пахомов Александр", "Рубцов Алексей", "Фефелов Сергей", "Эсанов Бахром", "Эсанбоев Анвар"];
 const ovenModels = ["XLT3240", "Robochef", "Zanolli 11/65", "Turbochef"];
 
@@ -81,6 +82,7 @@ export default function OvenMaintenancePage() {
   const [photos, setPhotos] = useState<Record<string, StoredPhoto>>({});
   const [photoError, setPhotoError] = useState("");
   const [processingPhoto, setProcessingPhoto] = useState<string | null>(null);
+  const [extraDragActive, setExtraDragActive] = useState(false);
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem("to-theme") as Theme | null;
@@ -162,9 +164,7 @@ export default function OvenMaintenancePage() {
     setChecklist((current) => ({ ...current, [itemId]: { ...current[itemId], ...patch } }));
   }
 
-  async function handlePhotoChange(slotKey: string, event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
+  async function addFilesToSlot(slotKey: string, files: File[]) {
     if (!files.length) return;
     setProcessingPhoto(slotKey);
     setPhotoError("");
@@ -184,6 +184,25 @@ export default function OvenMaintenancePage() {
       }
     }
     setProcessingPhoto(null);
+  }
+
+  async function handlePhotoChange(slotKey: string, event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    await addFilesToSlot(slotKey, files);
+  }
+
+  function acceptedDroppedImages(files: File[]) {
+    return files.filter((file) => file.type.startsWith("image/") || IMAGE_FILE_EXTENSION.test(file.name));
+  }
+
+  async function handleDroppedPhotos(slotKey: string, files: File[]) {
+    const images = acceptedDroppedImages(files);
+    if (!images.length) {
+      setPhotoError("Перетаскивать можно только файлы изображений.");
+      return;
+    }
+    await addFilesToSlot(slotKey, images);
   }
 
   async function deletePhoto(key: string) {
@@ -212,9 +231,7 @@ export default function OvenMaintenancePage() {
     });
   }
 
-  async function addExtraPhotos(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
+  async function addFilesToExtraPhotos(files: File[]) {
     for (const [index, file] of files.entries()) {
       const key = `${EXTRA_PHOTO_PREFIX}${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`;
       setProcessingPhoto(key);
@@ -229,6 +246,23 @@ export default function OvenMaintenancePage() {
       }
     }
     setProcessingPhoto(null);
+  }
+
+  async function addExtraPhotos(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    await addFilesToExtraPhotos(files);
+  }
+
+  async function handleExtraPhotoDrop(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    setExtraDragActive(false);
+    const images = acceptedDroppedImages(Array.from(event.dataTransfer.files));
+    if (!images.length) {
+      setPhotoError("Перетаскивать можно только файлы изображений.");
+      return;
+    }
+    await addFilesToExtraPhotos(images);
   }
 
   function updateActEntry(section: keyof ActEntries, index: number, value: string) {
@@ -392,13 +426,20 @@ export default function OvenMaintenancePage() {
         <section className="checklist-section photo-report-section" aria-labelledby="photo-report-title">
           <div className="checklist-section-heading"><span>02</span><div><h2 id="photo-report-title">Обязательные фотографии</h2><p>{completedRequiredPhotos} из {requiredPhotoSlots.length} обязательных фото добавлено</p></div></div>
           <div className="photo-progress" aria-hidden="true"><span style={{ width: `${requiredPhotoSlots.length ? completedRequiredPhotos / requiredPhotoSlots.length * 100 : 0}%` }} /></div>
-          <div className="photo-requirements">{photoRequirements.map((requirement, index) => <PhotoRequirementRow requirement={requirement} index={index} photos={photos} processingPhoto={processingPhoto} onChange={handlePhotoChange} onDelete={deletePhoto} key={requirement.id} />)}</div>
-          <article className="photo-requirement-row extra-photo-row">
+          <div className="photo-requirements">{photoRequirements.map((requirement, index) => <PhotoRequirementRow requirement={requirement} index={index} photos={photos} processingPhoto={processingPhoto} onChange={handlePhotoChange} onDropFiles={handleDroppedPhotos} onDelete={deletePhoto} key={requirement.id} />)}</div>
+          <article
+            className={`photo-requirement-row extra-photo-row${extraDragActive ? " is-dragging" : ""}`}
+            onDragEnter={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setExtraDragActive(true); } }}
+            onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setExtraDragActive(true); } }}
+            onDragLeave={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setExtraDragActive(false); }}
+            onDrop={handleExtraPhotoDrop}
+          >
             <div className="photo-requirement-copy"><span>{String(photoRequirements.length + 1).padStart(2, "0")}</span><div><strong>Дополнительные работы</strong><small>Добавьте столько фотографий, сколько необходимо</small></div></div>
             <div className="extra-photo-actions">
               <label className="camera-action">Камера<input type="file" accept="image/*,.heic,.heif,.avif,.webp" capture="environment" onChange={addExtraPhotos} /></label>
               <label className="gallery-action">Галерея<input type="file" accept="image/*,.heic,.heif,.avif,.webp" multiple onChange={addExtraPhotos} /></label>
             </div>
+            <span className="photo-drop-hint">или перетащите фотографии из папки сюда</span>
             {extraPhotos.length > 0 && <div className="extra-photo-grid">{extraPhotos.map((photo, index) => <PhotoPreviewCard photo={photo} label={`Фото ${index + 1}`} onDelete={deletePhoto} key={photo.key} />)}</div>}
           </article>
           {photoError && <p className="pdf-error" role="alert">{photoError}</p>}
@@ -438,7 +479,7 @@ export default function OvenMaintenancePage() {
   );
 }
 
-function PhotoRequirementRow({ requirement, index, photos, processingPhoto, onChange, onDelete }: { requirement: (typeof photoRequirements)[number]; index: number; photos: Record<string, StoredPhoto>; processingPhoto: string | null; onChange: (key: string, event: ChangeEvent<HTMLInputElement>) => void; onDelete: (key: string) => void; }) {
+function PhotoRequirementRow({ requirement, index, photos, processingPhoto, onChange, onDropFiles, onDelete }: { requirement: (typeof photoRequirements)[number]; index: number; photos: Record<string, StoredPhoto>; processingPhoto: string | null; onChange: (key: string, event: ChangeEvent<HTMLInputElement>) => void; onDropFiles: (key: string, files: File[]) => void; onDelete: (key: string) => void; }) {
   return (
     <article className="photo-requirement-row">
       <div className="photo-requirement-copy"><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{requirement.title}</strong>{requirement.note && <small>{requirement.note}</small>}</div></div>
@@ -446,15 +487,22 @@ function PhotoRequirementRow({ requirement, index, photos, processingPhoto, onCh
         const slotPhotos = Object.values(photos)
           .filter((photo) => photo.key === slot.key || photo.key.startsWith(`${slot.key}${SLOT_PHOTO_SEPARATOR}`))
           .sort((left, right) => left.key === slot.key ? -1 : right.key === slot.key ? 1 : left.updatedAt - right.updatedAt);
-        return <PhotoSlotGroup slot={slot} photos={slotPhotos} processing={processingPhoto === slot.key} onChange={onChange} onDelete={onDelete} key={slot.key} />;
+        return <PhotoSlotGroup slot={slot} photos={slotPhotos} processing={processingPhoto === slot.key} onChange={onChange} onDropFiles={onDropFiles} onDelete={onDelete} key={slot.key} />;
       })}</div>
     </article>
   );
 }
 
-function PhotoSlotGroup({ slot, photos, processing, onChange, onDelete }: { slot: (typeof photoRequirements)[number]["slots"][number]; photos: StoredPhoto[]; processing: boolean; onChange: (key: string, event: ChangeEvent<HTMLInputElement>) => void; onDelete: (key: string) => void; }) {
+function PhotoSlotGroup({ slot, photos, processing, onChange, onDropFiles, onDelete }: { slot: (typeof photoRequirements)[number]["slots"][number]; photos: StoredPhoto[]; processing: boolean; onChange: (key: string, event: ChangeEvent<HTMLInputElement>) => void; onDropFiles: (key: string, files: File[]) => void; onDelete: (key: string) => void; }) {
+  const [dragActive, setDragActive] = useState(false);
   return (
-    <div className={`photo-slot-group${photos.length ? " has-photos" : ""}`}>
+    <div
+      className={`photo-slot-group${photos.length ? " has-photos" : ""}${dragActive ? " is-dragging" : ""}`}
+      onDragEnter={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragActive(true); } }}
+      onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDragActive(true); } }}
+      onDragLeave={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDragActive(false); }}
+      onDrop={(event) => { event.preventDefault(); setDragActive(false); onDropFiles(slot.key, Array.from(event.dataTransfer.files)); }}
+    >
       <div className="photo-slot-group-heading">
         <strong>{slot.label}</strong>
         <small>{photos.length ? `${photos.length} фото` : slot.required ? "минимум 1 фото" : "необязательно"}</small>
@@ -463,6 +511,7 @@ function PhotoSlotGroup({ slot, photos, processing, onChange, onDelete }: { slot
         <label className="camera-action">{processing ? "Обработка…" : photos.length ? "Ещё с камеры" : "Сделать фото"}<input type="file" accept="image/*,.heic,.heif,.avif,.webp" capture="environment" onChange={(event) => onChange(slot.key, event)} disabled={processing} /></label>
         <label className="gallery-action">{photos.length ? "Добавить фото" : "Выбрать фото"}<input type="file" accept="image/*,.heic,.heif,.avif,.webp" multiple onChange={(event) => onChange(slot.key, event)} disabled={processing} /></label>
       </div>
+      <span className="photo-drop-hint">или перетащите фото сюда</span>
       {photos.length > 0 && <div className="photo-slot-previews">{photos.map((photo, index) => <PhotoPreviewCard photo={photo} label={`${slot.label}, фото ${index + 1}`} onDelete={onDelete} key={photo.key} />)}</div>}
     </div>
   );
