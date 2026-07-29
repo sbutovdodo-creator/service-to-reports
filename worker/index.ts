@@ -188,7 +188,8 @@ async function createOvenActPdf(request: Request, env: Env) {
 
     const bytes = await pdf.save();
     const fileCode = payload.act.objectCode.replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
-    return new Response(bytes, { headers: { "content-type": "application/pdf", "content-disposition": `attachment; filename="oven-act-${fileCode}-${payload.act.date}.pdf"`, "cache-control": "no-store" } });
+    const filename = `oven-act-${fileCode}-${payload.act.date}.pdf`;
+    return new Response(bytes, { headers: { "content-type": "application/pdf", "content-disposition": attachmentDisposition(filename, "application/pdf"), "cache-control": "no-store" } });
   } catch (error) {
     console.error("Failed to generate oven act PDF", error);
     return Response.json({ error: "Не удалось сформировать PDF" }, { status: 500 });
@@ -276,7 +277,8 @@ async function createOvenActDocx(request: Request, env: Env) {
     });
     const blob = await Packer.toBlob(doc);
     const code = payload.act.objectCode.replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
-    return new Response(blob, { headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "content-disposition": `attachment; filename="oven-act-${code}-${payload.act.date}.docx"`, "cache-control": "no-store" } });
+    const filename = `oven-act-${code}-${payload.act.date}.docx`;
+    return new Response(blob, { headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "content-disposition": attachmentDisposition(filename, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"), "cache-control": "no-store" } });
   } catch (error) {
     console.error("Failed to generate oven act DOCX", error);
     return Response.json({ error: "Не удалось сформировать редактируемый акт" }, { status: 500 });
@@ -386,7 +388,8 @@ async function createOvenPhotoReport(request: Request, env: Env) {
     pages.forEach((reportPage, index) => reportPage.drawText(`${index + 1} / ${pages.length}`, { x: 510, y: 22, size: 7, font, color: rgb(0.42, 0.5, 0.54) }));
     const bytes = await pdf.save();
     const code = metadata.act.objectCode.replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
-    return new Response(bytes, { headers: { "content-type": "application/pdf", "content-disposition": `attachment; filename="oven-photo-report-${code}-${metadata.act.date}.pdf"`, "cache-control": "no-store" } });
+    const filename = `oven-photo-report-${code}-${metadata.act.date}.pdf`;
+    return new Response(bytes, { headers: { "content-type": "application/pdf", "content-disposition": attachmentDisposition(filename, "application/pdf"), "cache-control": "no-store" } });
   } catch (error) {
     console.error("Failed to generate oven photo report", error);
     return Response.json({ error: "Не удалось сформировать фотоотчёт" }, { status: 500 });
@@ -471,7 +474,8 @@ async function createOvenPhotoReportDocx(request: Request, env: Env) {
     });
     const blob = await Packer.toBlob(doc);
     const code = metadata.act.objectCode.replace(/[^a-zA-Zа-яА-Я0-9-]+/g, "-");
-    return new Response(blob, { headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "content-disposition": `attachment; filename="oven-photo-report-${code}-${metadata.act.date}.docx"`, "cache-control": "no-store" } });
+    const filename = `oven-photo-report-${code}-${metadata.act.date}.docx`;
+    return new Response(blob, { headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "content-disposition": attachmentDisposition(filename, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"), "cache-control": "no-store" } });
   } catch (error) {
     console.error("Failed to generate oven photo report DOCX", error);
     return Response.json({ error: "Не удалось сформировать редактируемый отчёт" }, { status: 500 });
@@ -901,6 +905,11 @@ function safeAsciiFilename(name: string, mimeType: string) {
   const extension = mimeType === "application/pdf" ? ".pdf" : mimeType === "application/zip" ? ".zip" : ".docx";
   const stem = name.replace(/\.[^.]+$/, "").normalize("NFKD").replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "riklab-report";
   return `${stem}${extension}`;
+}
+
+function attachmentDisposition(filename: string, mimeType: string) {
+  const fallbackName = safeAsciiFilename(filename, mimeType);
+  return `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
 function encodeMimeHeader(value: string) {
