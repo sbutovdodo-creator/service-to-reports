@@ -173,5 +173,7 @@ export async function createNodeEnv() {
     SMTP_PASSWORD: process.env.SMTP_PASSWORD,
     MAIL_FROM: process.env.MAIL_FROM,
     MAIL_TO: process.env.MAIL_TO,
+    TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
   };
 }

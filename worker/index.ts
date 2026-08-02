@@ -24,6 +24,8 @@ interface Env {
   SMTP_PASSWORD?: string;
   MAIL_FROM?: string;
   MAIL_TO?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_CHAT_ID?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -568,8 +570,17 @@ async function finalizeOvenPackage(request: Request, env: Env) {
       mailStatus = "failed";
       console.error("Failed to email oven package", error instanceof Error ? error.message : "Unknown error");
     }
+    let telegramStatus = env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID ? "sent" : "not-configured";
+    if (telegramStatus === "sent") {
+      try {
+        await sendPackagePdfsToTelegram(input.packageId, input.metadata, env);
+      } catch (error) {
+        telegramStatus = "failed";
+        console.error("Failed to send oven PDFs to Telegram", error instanceof Error ? error.message : "Unknown error");
+      }
+    }
     const fallbackName = safeAsciiFilename(archiveName, "application/zip");
-    return new Response(createStoredZipStream(env, entries), { headers: { "content-type": "application/zip", "content-length": String(archiveSize), "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archiveName)}`, "cache-control": "no-store", "x-mail-recipient": env.MAIL_TO || "", "x-mail-status": mailStatus } });
+    return new Response(createStoredZipStream(env, entries), { headers: { "content-type": "application/zip", "content-length": String(archiveSize), "content-disposition": `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(archiveName)}`, "cache-control": "no-store", "x-mail-recipient": env.MAIL_TO || "", "x-mail-status": mailStatus, "x-telegram-status": telegramStatus } });
   } catch (error) {
     console.error("Failed to finalize oven package", error instanceof Error ? error.message : "Unknown error");
     return Response.json({ error: "Не удалось упаковать и отправить документы" }, { status: 500 });
@@ -585,6 +596,47 @@ type EmailMetadata = {
   ovenPosition?: string;
   technicianName?: string;
 };
+
+const TELEGRAM_DOCUMENT_LIMIT = 50_000_000;
+
+async function sendPackagePdfsToTelegram(packageId: string, metadata: EmailMetadata, env: Env) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+  const clean = (value: unknown, fallback: string) => String(value || fallback).replace(/[\r\n]+/g, " ").trim().slice(0, 180);
+  const objectCode = clean(metadata.objectCode, "без номера");
+  const displayDate = formatRussianDate(clean(metadata.date, "без даты"));
+  const serviceType = clean(metadata.serviceType, "ТО печи");
+  const ovenModel = clean(metadata.ovenModel, "модель не указана");
+  const ovenPosition = clean(metadata.ovenPosition, "положение не указано");
+  const technicianName = clean(metadata.technicianName, "не указан");
+  const captionBase = [
+    `${objectCode} — ${serviceType} — ${displayDate}`,
+    `Печь: ${ovenModel} (${ovenPosition})`,
+    `Инженер: ${technicianName}`,
+  ].join("\n");
+  const documents = [
+    { key: "act.pdf", label: "Акт ТО" },
+    { key: "report.pdf", label: "Фотоотчёт ТО" },
+  ];
+  for (const document of documents) {
+    const object = await env.PRIVATE_FILES.get(`oven-packages/${packageId}/${document.key}`);
+    if (!object) throw new Error(`Telegram PDF is missing: ${document.key}`);
+    if (object.size > TELEGRAM_DOCUMENT_LIMIT) throw new Error(`Telegram PDF exceeds 50 MB: ${document.key}`);
+    const filename = object.customMetadata?.filename || `${document.label}-${objectCode}-${metadata.date || "без-даты"}.pdf`;
+    const bytes = await object.arrayBuffer();
+    const form = new FormData();
+    form.set("chat_id", env.TELEGRAM_CHAT_ID);
+    form.set("caption", `${document.label}\n${captionBase}`.slice(0, 1024));
+    form.set("document", new Blob([bytes], { type: "application/pdf" }), filename);
+    let response: Response;
+    try {
+      response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: form });
+    } catch {
+      throw new Error(`Telegram request failed: ${document.key}`);
+    }
+    const result = await response.json().catch(() => null) as { ok?: boolean; description?: string } | null;
+    if (!response.ok || !result?.ok) throw new Error(`Telegram rejected ${document.key} (${response.status}): ${result?.description || "unknown error"}`);
+  }
+}
 
 async function sendOvenReportEmail(request: Request, env: Env) {
   if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASSWORD || !env.MAIL_FROM || !env.MAIL_TO) {

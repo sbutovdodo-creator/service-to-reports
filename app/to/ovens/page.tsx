@@ -339,6 +339,7 @@ export default function OvenMaintenancePage() {
         throw new Error(result.error || "Не удалось отправить архив");
       }
       const mailStatus = deliveryResponse.headers.get("x-mail-status");
+      const telegramStatus = deliveryResponse.headers.get("x-telegram-status");
       const archive = await deliveryResponse.blob();
       const archiveName = `ТО-печи-${form.objectCode}-${form.date}.zip`;
       const link = document.createElement("a");
@@ -346,11 +347,17 @@ export default function OvenMaintenancePage() {
       link.download = archiveName;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(link.href), 5_000);
-      if (mailStatus === "failed") {
+      if (mailStatus === "failed" && telegramStatus === "failed") {
         setSaveLabel("ZIP скачан на устройство");
-        setPdfError("Документы созданы и ZIP скачан, но почтовый сервер не принял письмо. Черновик сохранён — попробуйте отправить комплект ещё раз.");
-      } else {
+        setPdfError("Документы созданы и ZIP скачан, но почта и Telegram временно не приняли файлы. Черновик сохранён — попробуйте отправить комплект ещё раз.");
+      } else if (mailStatus === "failed") {
+        setSaveLabel("ZIP скачан на устройство");
+        setPdfError("Документы созданы, PDF отправлены в Telegram и ZIP скачан, но почтовый сервер не принял письмо. Черновик сохранён — попробуйте отправить комплект ещё раз.");
+      } else if (telegramStatus === "failed") {
         setSaveLabel("ZIP скачан и отправлен на info@riklab.ru");
+        setPdfError("Почта приняла документы, но Telegram временно не принял PDF. Черновик сохранён — попробуйте отправить комплект ещё раз.");
+      } else {
+        setSaveLabel("ZIP скачан, письмо и PDF в Telegram отправлены");
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Не удалось сформировать документы";
