@@ -35,7 +35,7 @@ const EXTRA_PHOTO_PREFIX = "extra-work-";
 const SLOT_PHOTO_SEPARATOR = "--photo-";
 const IMAGE_FILE_EXTENSION = /\.(?:avif|heic|heif|jpe?g|png|webp)$/i;
 const technicians = ["Давыдов Алексей", "Кусков Сергей", "Пахомов Александр", "Рубцов Алексей", "Фефелов Сергей", "Эсанов Бахром", "Эсанбоев Анвар"];
-const ovenModels = ["XLT3240", "Robochef", "Zanolli 11/65", "Turbochef"];
+const ovenModels = ["XLT3240", "Robochef", "Zanolli 11/65", "Turbochef", "Abat"];
 
 function customerForObject(objectId: string) {
   if (/^0-\d+$/.test(objectId) || /^x[1-4]$/.test(objectId)) return "ООО «Пицца Венчур»";
