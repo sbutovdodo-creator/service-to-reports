@@ -2,6 +2,7 @@
 
 import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import { ovenChecklist } from "./checklist";
+import { legalEntityForPointCode } from "./legal-entities";
 import { siteGroups, siteObjects } from "./objects";
 import { allPhotoSlots, photoRequirements, requiredPhotoSlots } from "./photos";
 import { clearStoredPhotos, compressPhoto, loadStoredPhotos, optimizeStoredPhoto, removeStoredPhoto, saveStoredPhoto, StoredPhoto } from "./photo-storage";
@@ -39,9 +40,8 @@ const technicians = ["Давыдов Алексей", "Кусков Сергей
 const ovenModels = ["XLT3240", "Robochef", "Zanolli 11/65", "Turbochef", "Abat"];
 
 function customerForObject(objectId: string) {
-  if (/^0-\d+$/.test(objectId) || /^x[1-4]$/.test(objectId)) return "ООО «Пицца Венчур»";
-  if (/^m(?:[1-9]|[12]\d|30)$/.test(objectId) || /^m27-/.test(objectId) || ["r1", "r2", "zh1", "zh2", "k1", "k2"].includes(objectId)) return "ООО «ДПМ Север»";
-  return "";
+  const site = siteObjects.find((item) => item.id === objectId);
+  return site ? legalEntityForPointCode(site.code) : "";
 }
 
 function siteLabel(site: (typeof siteObjects)[number]) {
