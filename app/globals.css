@@ -207,7 +207,15 @@ footer { padding-top: 20px; border-top: 1px solid var(--line); color: var(--mute
 .compact-heading > p { margin: 15px 0 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
 .compact-act-form { margin-top: 22px; gap: 12px; }
 .compact-form-section { padding: clamp(18px, 3vw, 25px); }
-.object-field select { font-weight: 750; }
+.object-field input { font-weight: 750; }
+.object-combobox { position: relative; }
+.object-search-results { max-height: 320px; overflow-y: auto; position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; left: 0; padding: 7px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-strong); box-shadow: 0 18px 42px rgba(10, 35, 48, .24); }
+.object-search-group > span { display: block; padding: 8px 9px 5px; color: var(--muted); font-size: 8px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+.object-search-group button { width: 100%; padding: 9px; display: grid; grid-template-columns: minmax(54px, auto) 1fr; align-items: start; gap: 10px; border: 0; border-radius: 9px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.object-search-group button:hover, .object-search-group button:focus-visible, .object-search-group button[aria-selected="true"] { outline: none; background: var(--accent-soft); }
+.object-search-group button strong { color: var(--accent); font-size: 11px; }
+.object-search-group button small { color: var(--muted); font-size: 10px; line-height: 1.35; }
+.object-search-empty { margin: 0; padding: 16px 10px; color: var(--muted); text-align: center; font-size: 11px; }
 .object-summary { margin: 15px 0 18px; padding: 14px; display: grid; grid-template-columns: .7fr 1.3fr; gap: 12px; border-radius: 14px; background: var(--accent-soft); }
 .object-summary div { min-width: 0; }
 .object-summary span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }

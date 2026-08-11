@@ -159,7 +159,7 @@ async function createOvenActPdf(request: Request, env: Env) {
 
     const [year, month, day] = payload.act.date.split("-");
     text([day, month, year].filter(Boolean).join("."), 160, 69);
-    text(payload.act.customer || "Заказчик будет указан позднее", 160, 93);
+    if (payload.act.customer) text(payload.act.customer, 160, 93);
     text(`${payload.act.pizzeriaAddress} (${payload.act.objectCode})`, 160, 105, 5.8);
     text(`${payload.act.ovenModel} (${payload.act.ovenPosition})`, 160, 136);
     text(payload.act.serialNumber || "не указан", 160, 148);
@@ -217,7 +217,7 @@ async function createOvenActDocx(request: Request, env: Env) {
     const date = [day, month, year].filter(Boolean).join(".");
     const metaRows = [
       ["Дата", date],
-      ["Заказчик", payload.act.customer || "Будет указан позднее"],
+      ["Заказчик", payload.act.customer],
       ["Объект", `${payload.act.pizzeriaAddress} (${payload.act.objectCode})`],
       ["Оборудование", `${payload.act.ovenModel} (${payload.act.ovenPosition})`],
       ["Серийный номер", payload.act.serialNumber || "не указан"],
@@ -344,7 +344,7 @@ async function createOvenPhotoReport(request: Request, env: Env) {
       ["Дата", [day, month, year].filter(Boolean).join(".")],
       ["Печь", `${metadata.act.ovenModel} (${metadata.act.ovenPosition})`],
       ["Инженер", metadata.act.technicianName],
-      ["Заказчик", metadata.act.customer || "Не указан"],
+      ["Заказчик", metadata.act.customer],
     ];
     for (const [label, value] of metaRows) {
       page.drawText(label, { x: 48, y, size: 7.5, font, color: rgb(0.35, 0.46, 0.52) });
@@ -433,7 +433,7 @@ async function createOvenPhotoReportDocx(request: Request, env: Env) {
       ["Дата", [day, month, year].filter(Boolean).join(".")],
       ["Печь", `${metadata.act.ovenModel} (${metadata.act.ovenPosition})`],
       ["Инженер", metadata.act.technicianName],
-      ["Заказчик", metadata.act.customer || "Не указан"],
+      ["Заказчик", metadata.act.customer],
     ];
     const children: Array<Paragraph | Table> = [
       new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: "ФОТООТЧЁТ", bold: true, color: "087A9F", size: 20, font: "Arial" })] }),

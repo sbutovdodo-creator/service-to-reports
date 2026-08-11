@@ -32,6 +32,7 @@ const CHECKLIST_KEY = "oven-checklist-draft-v1";
 const ACT_ENTRIES_KEY = "oven-act-entries-draft-v1";
 const STEP_KEY = "oven-maintenance-step-v1";
 const EXTRA_PHOTO_PREFIX = "extra-work-";
+const ISSUE_PHOTO_PREFIX = "unresolved-issue-";
 const SLOT_PHOTO_SEPARATOR = "--photo-";
 const IMAGE_FILE_EXTENSION = /\.(?:avif|heic|heif|jpe?g|png|webp)$/i;
 const technicians = ["Давыдов Алексей", "Кусков Сергей", "Пахомов Александр", "Рубцов Алексей", "Фефелов Сергей", "Эсанов Бахром", "Эсанбоев Анвар"];
@@ -41,6 +42,14 @@ function customerForObject(objectId: string) {
   if (/^0-\d+$/.test(objectId) || /^x[1-4]$/.test(objectId)) return "ООО «Пицца Венчур»";
   if (/^m(?:[1-9]|[12]\d|30)$/.test(objectId) || /^m27-/.test(objectId) || ["r1", "r2", "zh1", "zh2", "k1", "k2"].includes(objectId)) return "ООО «ДПМ Север»";
   return "";
+}
+
+function siteLabel(site: (typeof siteObjects)[number]) {
+  return `${site.code} — ${site.address}`;
+}
+
+function normalizeSearch(value: string) {
+  return value.toLocaleLowerCase("ru-RU").replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/gi, " ").trim();
 }
 
 function localDate() {
@@ -83,6 +92,9 @@ export default function OvenMaintenancePage() {
   const [photoError, setPhotoError] = useState("");
   const [processingPhoto, setProcessingPhoto] = useState<string | null>(null);
   const [extraDragActive, setExtraDragActive] = useState(false);
+  const [issueDragActive, setIssueDragActive] = useState(false);
+  const [objectSearch, setObjectSearch] = useState("");
+  const [objectMenuOpen, setObjectMenuOpen] = useState(false);
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem("to-theme") as Theme | null;
@@ -95,6 +107,8 @@ export default function OvenMaintenancePage() {
       try {
         const restored = { ...initialData, ...JSON.parse(savedDraft) } as ActData;
         setForm({ ...restored, customer: customerForObject(restored.objectId) });
+        const restoredSite = siteObjects.find((site) => site.id === restored.objectId);
+        setObjectSearch(restoredSite ? siteLabel(restoredSite) : "");
       } catch { setForm({ ...initialData, date: localDate() }); }
     } else setForm({ ...initialData, date: localDate() });
 
@@ -150,6 +164,15 @@ export default function OvenMaintenancePage() {
   const completedRequiredPhotos = requiredPhotoSlots.filter((slot) => photos[slot.key]).length;
   const reportIsComplete = isComplete && completedRequiredPhotos === requiredPhotoSlots.length;
   const extraPhotos = Object.values(photos).filter((photo) => photo.key.startsWith(EXTRA_PHOTO_PREFIX)).sort((left, right) => left.updatedAt - right.updatedAt);
+  const issuePhotos = Object.values(photos).filter((photo) => photo.key.startsWith(ISSUE_PHOTO_PREFIX)).sort((left, right) => left.updatedAt - right.updatedAt);
+  const filteredSites = useMemo(() => {
+    const terms = normalizeSearch(objectSearch).split(" ").filter(Boolean);
+    if (!terms.length || form.objectId) return siteObjects;
+    return siteObjects.filter((site) => {
+      const searchable = normalizeSearch(`${site.code} ${site.address} ${site.group}`);
+      return terms.every((term) => searchable.includes(term));
+    });
+  }, [objectSearch, form.objectId]);
 
   function updateField<K extends keyof ActData>(field: K, value: ActData[K]) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -158,6 +181,14 @@ export default function OvenMaintenancePage() {
   function selectObject(objectId: string) {
     const site = siteObjects.find((item) => item.id === objectId);
     setForm((current) => ({ ...current, objectId, objectCode: site?.code ?? "", pizzeriaAddress: site?.address ?? "", customer: site ? customerForObject(site.id) : "" }));
+    if (site) setObjectSearch(siteLabel(site));
+  }
+
+  function searchObject(value: string) {
+    setObjectSearch(value);
+    setObjectMenuOpen(true);
+    const exactSite = siteObjects.find((site) => normalizeSearch(siteLabel(site)) === normalizeSearch(value));
+    selectObject(exactSite?.id ?? "");
   }
 
   function updateChecklist(itemId: string, patch: Partial<{ done: boolean; comment: string }>) {
@@ -231,9 +262,9 @@ export default function OvenMaintenancePage() {
     });
   }
 
-  async function addFilesToExtraPhotos(files: File[]) {
+  async function addFilesToPhotoCollection(prefix: string, files: File[]) {
     for (const [index, file] of files.entries()) {
-      const key = `${EXTRA_PHOTO_PREFIX}${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`;
+      const key = `${prefix}${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`;
       setProcessingPhoto(key);
       setPhotoError("");
       try {
@@ -251,7 +282,13 @@ export default function OvenMaintenancePage() {
   async function addExtraPhotos(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
-    await addFilesToExtraPhotos(files);
+    await addFilesToPhotoCollection(EXTRA_PHOTO_PREFIX, files);
+  }
+
+  async function addIssuePhotos(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    await addFilesToPhotoCollection(ISSUE_PHOTO_PREFIX, files);
   }
 
   async function handleExtraPhotoDrop(event: DragEvent<HTMLElement>) {
@@ -262,7 +299,18 @@ export default function OvenMaintenancePage() {
       setPhotoError("Перетаскивать можно только файлы изображений.");
       return;
     }
-    await addFilesToExtraPhotos(images);
+    await addFilesToPhotoCollection(EXTRA_PHOTO_PREFIX, images);
+  }
+
+  async function handleIssuePhotoDrop(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    setIssueDragActive(false);
+    const images = acceptedDroppedImages(Array.from(event.dataTransfer.files));
+    if (!images.length) {
+      setPhotoError("Перетаскивать можно только файлы изображений.");
+      return;
+    }
+    await addFilesToPhotoCollection(ISSUE_PHOTO_PREFIX, images);
   }
 
   function updateActEntry(section: keyof ActEntries, index: number, value: string) {
@@ -380,7 +428,9 @@ export default function OvenMaintenancePage() {
     });
     const optimizedExtraPhotos = Object.values(sourcePhotos).filter((photo) => photo.key.startsWith(EXTRA_PHOTO_PREFIX)).sort((left, right) => left.updatedAt - right.updatedAt);
     const extraItems = optimizedExtraPhotos.map((photo, index) => ({ key: photo.key, title: `Дополнительные работы — фото ${index + 1}`, required: false }));
-    const photoItems = [...regularItems, ...extraItems];
+    const optimizedIssuePhotos = Object.values(sourcePhotos).filter((photo) => photo.key.startsWith(ISSUE_PHOTO_PREFIX)).sort((left, right) => left.updatedAt - right.updatedAt);
+    const issueItems = optimizedIssuePhotos.map((photo, index) => ({ key: photo.key, title: `Выявленные замечания — фото ${index + 1}`, required: false }));
+    const photoItems = [...regularItems, ...extraItems, ...issueItems];
     const body = new FormData();
     body.append("metadata", JSON.stringify({ act: form, entries: actEntries, photos: photoItems }));
     photoItems.forEach((item) => body.append(`photo:${item.key}`, sourcePhotos[item.key].blob, `${item.key}.jpg`));
@@ -393,6 +443,8 @@ export default function OvenMaintenancePage() {
     window.localStorage.removeItem(CHECKLIST_KEY);
     window.localStorage.removeItem(ACT_ENTRIES_KEY);
     setForm({ ...initialData, date: localDate() });
+    setObjectSearch("");
+    setObjectMenuOpen(false);
     setChecklist(emptyChecklist());
     setActEntries(emptyActEntries());
     clearStoredPhotos().catch(() => undefined);
@@ -418,8 +470,8 @@ export default function OvenMaintenancePage() {
       <form className="one-page-form" onSubmit={handleSubmit}>
         <section className="form-section compact-form-section act-data-section">
           <div className="checklist-section-heading"><span>01</span><div><h2>Данные акта</h2><p>Объект, оборудование и инженер</p></div></div>
-          <label className="field object-field"><span>Объект *</span><select value={form.objectId} onChange={(event) => selectObject(event.target.value)} required><option value="">Выберите объект</option>{siteGroups.map((group) => <optgroup label={group} key={group}>{siteObjects.filter((site) => site.group === group).map((site) => <option value={site.id} key={site.id}>{site.code} — {site.address}</option>)}</optgroup>)}</select></label>
-          {form.objectId && <div className="object-summary" aria-live="polite"><div><span>Заказчик</span><strong>{form.customer || "Будет добавлен позже"}</strong></div><div><span>Пиццерия</span><strong>{form.objectCode}</strong><p>{form.pizzeriaAddress}</p></div></div>}
+          <label className="field object-field"><span>Объект *</span><div className="object-combobox"><input value={objectSearch} onChange={(event) => searchObject(event.target.value)} onFocus={() => setObjectMenuOpen(true)} onBlur={() => window.setTimeout(() => setObjectMenuOpen(false), 120)} onKeyDown={(event) => { if (event.key === "Escape") setObjectMenuOpen(false); if (event.key === "Enter" && objectMenuOpen && !form.objectId && filteredSites[0]) { event.preventDefault(); selectObject(filteredSites[0].id); setObjectMenuOpen(false); } }} placeholder="Введите номер точки или адрес" role="combobox" aria-expanded={objectMenuOpen} aria-controls="object-search-results" aria-autocomplete="list" autoComplete="off" required />{objectMenuOpen && <div className="object-search-results" id="object-search-results" role="listbox">{filteredSites.length ? siteGroups.map((group) => { const groupSites = filteredSites.filter((site) => site.group === group); return groupSites.length ? <div className="object-search-group" key={group}><span>{group}</span>{groupSites.map((site) => <button type="button" role="option" aria-selected={site.id === form.objectId} onPointerDown={(event) => { event.preventDefault(); selectObject(site.id); setObjectMenuOpen(false); }} key={site.id}><strong>{site.code}</strong><small>{site.address}</small></button>)}</div> : null; }) : <p className="object-search-empty">Точки не найдены</p>}</div>}</div></label>
+          {form.objectId && <div className="object-summary" aria-live="polite"><div><span>Заказчик</span><strong>{form.customer}</strong></div><div><span>Пиццерия</span><strong>{form.objectCode}</strong><p>{form.pizzeriaAddress}</p></div></div>}
           <div className="compact-field-grid">
             <label className="field"><span>Дата работ *</span><input type="date" value={form.date} onChange={(event) => updateField("date", event.target.value)} required /></label>
             <label className="field"><span>Модель печи *</span><select value={form.ovenModel} onChange={(event) => updateField("ovenModel", event.target.value)} required><option value="">Выберите модель</option>{ovenModels.map((model) => <option value={model} key={model}>{model}</option>)}</select></label>
@@ -448,6 +500,21 @@ export default function OvenMaintenancePage() {
             </div>
             <span className="photo-drop-hint">или перетащите фотографии из папки сюда</span>
             {extraPhotos.length > 0 && <div className="extra-photo-grid">{extraPhotos.map((photo, index) => <PhotoPreviewCard photo={photo} label={`Фото ${index + 1}`} onDelete={deletePhoto} key={photo.key} />)}</div>}
+          </article>
+          <article
+            className={`photo-requirement-row extra-photo-row${issueDragActive ? " is-dragging" : ""}`}
+            onDragEnter={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setIssueDragActive(true); } }}
+            onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setIssueDragActive(true); } }}
+            onDragLeave={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setIssueDragActive(false); }}
+            onDrop={handleIssuePhotoDrop}
+          >
+            <div className="photo-requirement-copy"><span>{String(photoRequirements.length + 2).padStart(2, "0")}</span><div><strong>Выявленные замечания</strong><small>Фото неисправностей, которые не удалось устранить во время ТО — необязательно</small></div></div>
+            <div className="extra-photo-actions">
+              <label className="camera-action">Камера<input type="file" accept="image/*,.heic,.heif,.avif,.webp" capture="environment" onChange={addIssuePhotos} /></label>
+              <label className="gallery-action">Галерея<input type="file" accept="image/*,.heic,.heif,.avif,.webp" multiple onChange={addIssuePhotos} /></label>
+            </div>
+            <span className="photo-drop-hint">или перетащите фотографии из папки сюда</span>
+            {issuePhotos.length > 0 && <div className="extra-photo-grid">{issuePhotos.map((photo, index) => <PhotoPreviewCard photo={photo} label={`Замечание — фото ${index + 1}`} onDelete={deletePhoto} key={photo.key} />)}</div>}
           </article>
           {photoError && <p className="pdf-error" role="alert">{photoError}</p>}
           <p className="photo-storage-note">Обязательные фото нужны только для формирования отдельного фотоотчёта. Условные фотографии помечены как необязательные.</p>
